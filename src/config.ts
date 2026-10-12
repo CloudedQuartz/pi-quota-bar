@@ -13,6 +13,7 @@ export type ProviderQuotaConfig =
   | ({ adapter: 'new-api'; quotaPerUnit: number; currency: string } & Pick<NewApiOptions, 'dashboardAccessToken' | 'dashboardUserId'>)
   | ({ adapter: 'yescode' } & YesCodeOptions)
   | { adapter: 'exec'; command: string[]; label: string }
+  | { adapter: 'alias'; of: string }
   | { adapter: 'deepseek' | 'sub2api' | 'opencode-go' };
 export interface QuotaConfig { providers: Record<string, ProviderQuotaConfig>; footerWindows?: FooterWindows }
 
@@ -41,7 +42,7 @@ function parseFooterWindows(value: unknown): FooterWindows {
 export class QuotaConfigError extends Error {
   constructor() {
     // Settings may accidentally contain secrets. Never echo content/values.
-    super('Invalid settings.json quotaUsage. Use providers with adapter "new-api", "deepseek", "sub2api", "opencode-go", "yescode" or "exec", and optionally footerWindows as a positive integer or "all".');
+    super('Invalid settings.json quotaUsage. Use providers with adapter "new-api", "deepseek", "sub2api", "opencode-go", "yescode", "exec" or "alias", and optionally footerWindows as a positive integer or "all".');
   }
 }
 
@@ -83,6 +84,13 @@ export function parseQuotaConfig(value: unknown): QuotaConfig {
       } catch { throw new QuotaConfigError(); }
       continue;
     }
+    if (item.adapter === 'alias') {
+      if (Object.keys(item).some(key => key !== 'adapter' && key !== 'of')
+        || typeof item.of !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(item.of)
+        || item.of === provider) throw new QuotaConfigError();
+      providers[provider] = { adapter: 'alias', of: item.of };
+      continue;
+    }
     if (item.adapter !== 'new-api'
       || Object.keys(item).some(key => !['adapter', 'quotaPerUnit', 'currency', ...DASHBOARD_KEYS].includes(key))
       || (item.quotaPerUnit !== undefined && typeof item.quotaPerUnit !== 'number')
@@ -105,8 +113,9 @@ export function loadQuotaFooterWindows(settings: unknown): FooterWindows | undef
 export function loadQuotaAdaptersFromSettings(settings: unknown): QuotaAdapter[] {
   if (!record(settings) || settings.quotaUsage === undefined) return [];
   const config = parseQuotaConfig(settings.quotaUsage);
-  return Object.entries(config.providers).map(([provider, options]) => {
+  return Object.entries(config.providers).flatMap(([provider, options]) => {
     switch (options.adapter) {
+      case 'alias': return []; // Aliases declare no adapter; extension.ts wires them.
       case 'deepseek': return createDeepSeekAdapter(provider);
       case 'sub2api': return createSub2ApiAdapter(provider);
       case 'opencode-go': return createOpenCodeGoAdapter(provider);
@@ -115,6 +124,16 @@ export function loadQuotaAdaptersFromSettings(settings: unknown): QuotaAdapter[]
       case 'new-api': return createNewApiAdapter(provider, options);
     }
   });
+}
+
+export function loadQuotaAliasesFromSettings(settings: unknown): Record<string, string> {
+  if (!record(settings) || settings.quotaUsage === undefined) return {};
+  const config = parseQuotaConfig(settings.quotaUsage);
+  const aliases: Record<string, string> = Object.create(null);
+  for (const [provider, options] of Object.entries(config.providers)) {
+    if (options.adapter === 'alias') aliases[provider] = options.of;
+  }
+  return aliases;
 }
 
   // Explicit adapter bindings from quotaUsage already have adapters registered; listing every

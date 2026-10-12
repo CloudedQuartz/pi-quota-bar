@@ -11,7 +11,7 @@ import type { QuotaAdapter } from '../src/query/types.ts';
 
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
-function harness(mode = 'tui', adapters: QuotaAdapter[] = [], footerWindows?: FooterWindows) {
+function harness(mode = 'tui', adapters: QuotaAdapter[] = [], footerWindows?: FooterWindows, aliases?: Record<string, string>) {
   const handlers = new Map<string, Handler>();
   const commands = new Map<string, { handler: (args: string, ctx: ExtensionContext) => Promise<void> }>();
   const statuses: (string | undefined)[] = [];
@@ -49,7 +49,7 @@ function harness(mode = 'tui', adapters: QuotaAdapter[] = [], footerWindows?: Fo
       getAll: () => ctx.model ? [ctx.model] : [],
     }, ui,
   } as unknown as ExtensionContext;
-  createQuotaExtension({ adapters, footerWindows })(pi);
+  createQuotaExtension({ adapters, footerWindows, aliases })(pi);
   return {
     ctx, ui, statuses, commands, emitted, entries, renderers, widgets,
     requests: () => requests,
@@ -230,6 +230,33 @@ test('/usage pins the current provider first and marks it with a star', async t 
   // The marker survives the session persistence round trip.
   const restored = usageCardComponent(JSON.parse(JSON.stringify(h.entries[0])).data);
   assert.ok(restored.render(100).some(line => line.startsWith('★ Kimi')));
+});
+
+test('alias provider shares the target account: one pinned row, no double query in /usage', async t => {
+  let queries = 0;
+  const target: QuotaAdapter = {
+    provider: 'main', label: 'Main',
+    async query({ now }) {
+      queries++;
+      return { fetchedAt: now(), windows: [], balance: { currency: 'USD', remaining: 42 } };
+    },
+  };
+  const h = harness('tui', [target], undefined, { 'main-alias': 'main' });
+  t.after(h.cleanup);
+  (h.ctx as { model: unknown }).model = { provider: 'main-alias', id: 'alias-model' };
+  const registry = h.ctx.modelRegistry as unknown as { getAll: () => unknown[] };
+  registry.getAll = () => [h.ctx.model, { provider: 'main', id: 'main-model' }];
+  h.emit('session_start');
+  await tick();
+  assert.equal(queries, 1); // the footer queried the target once via the alias
+  assert.match(h.statuses.at(-1) ?? '', /\$42\.00/);
+  await h.commands.get('usage')!.handler('', h.ctx);
+  const text = usageCardComponent(h.entries[0].data).render(100).join('\n');
+  assert.ok(text.includes('$42.00'), text);
+  const rows = text.split('\n').filter(line => line.includes('Main'));
+  assert.equal(rows.length, 1, text); // the alias is folded into the target's row
+  assert.ok(rows[0].startsWith('★ Main'), text); // and the session pin follows the fold
+  assert.equal(queries, 2); // footer once, /usage once — never both IDs in one pass
 });
 
 for (const event of ['session_shutdown', 'model_select']) {

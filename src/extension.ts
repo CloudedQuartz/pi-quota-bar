@@ -10,6 +10,7 @@ import { openCodeGoAdapter } from './query/opencode-go.ts';
 import { QuotaController } from './query/controller.ts';
 import { createJsonClient, createPostJsonClient } from './query/http.ts';
 import { AdapterRegistry } from './query/registry.ts';
+import { createAliasAdapter, createDanglingAliasAdapter } from './query/alias.ts';
 import type { ProviderAuth, QuotaAdapter, QuotaState } from './query/types.ts';
 
 export const STATUS_EVENT = 'quota-bar:state:v1';
@@ -23,6 +24,7 @@ export interface QuotaExtensionOptions {
   // Explicit adapters replace matching built-ins; duplicate explicit IDs are rejected.
   adapters?: readonly QuotaAdapter[];
   providers?: readonly string[]; // Extra configured quota providers to include in /usage
+  aliases?: Record<string, string>; // alias provider → target provider; shares the target's account quota
   footer?: boolean; // false: query + /usage + structured events only
   footerWindows?: FooterWindows; // footer window cap; default 2, 'all' shows every window
   intervalMs?: number;
@@ -32,12 +34,20 @@ export interface QuotaExtensionOptions {
 export function createQuotaExtension(options: QuotaExtensionOptions = {}) {
   return (pi: ExtensionAPI): void => {
     const explicitAdapters = options.adapters ?? [];
-    const explicitProviderIds = new Set(explicitAdapters.map(adapter => adapter.provider));
+    const aliases = options.aliases ?? {};
+    const explicitProviderIds = new Set([...explicitAdapters.map(adapter => adapter.provider), ...Object.keys(aliases)]);
     // Settings are deliberate user bindings, so they take precedence over defaults.
     // AdapterRegistry still detects an ambiguous duplicate among explicit adapters.
     const registry = new AdapterRegistry([
       codexAdapter, kimiAdapter, openCodeGoAdapter, createDeepSeekAdapter('deepseek'),
     ].filter(adapter => !explicitProviderIds.has(adapter.provider)).concat(explicitAdapters));
+    // Alias providers share their target's account: register a delegating adapter
+    // under the alias ID. One hop only — an alias of an alias never resolves, and
+    // a dangling alias stays visible as an error instead of vanishing silently.
+    for (const [alias, targetId] of Object.entries(aliases)) {
+      const target = aliases[targetId] === undefined ? registry.get(targetId) : undefined;
+      registry.register(target ? createAliasAdapter(alias, target) : createDanglingAliasAdapter(alias));
+    }
     let current: ExtensionContext | undefined;
     let selectedProvider: string | undefined;
     let timer: ReturnType<typeof setInterval> | undefined;
@@ -119,7 +129,8 @@ export function createQuotaExtension(options: QuotaExtensionOptions = {}) {
       add(ctx.model?.provider);
       for (const adapter of registry.list()) add(adapter.provider);
       for (const provider of options.providers ?? []) add(provider);
-      return providers;
+      // An alias absorbed by its queried target gets no row of its own.
+      return providers.filter(provider => aliases[provider] === undefined || !providers.includes(aliases[provider]));
     };
 
     const queryProvider = async (provider: string, getAuth: ReturnType<typeof resolveAuth>): Promise<QuotaState> => {
@@ -218,11 +229,16 @@ export function createQuotaExtension(options: QuotaExtensionOptions = {}) {
           const states = await Promise.all(providers.map(provider => queryProvider(provider, getAuth)));
           // The session's own provider always leads, whatever its health looks like.
           const currentProvider = ctx.model?.provider;
+          // An alias session pins and stars the target's folded row instead.
+          const canonicalProvider = currentProvider === undefined ? undefined : (aliases[currentProvider] ?? currentProvider);
           const ordered = states
             .map((state, index) => ({ state, index }))
             .sort((a, b) => {
-              const pinned = (item: { state: QuotaState }) =>
-                currentProvider !== undefined && 'provider' in item.state && item.state.provider === currentProvider ? 0 : 1;
+              const pinned = (item: { state: QuotaState }) => {
+                if (currentProvider === undefined || !('provider' in item.state)) return 1;
+                const provider = item.state.provider;
+                return provider === currentProvider || provider === canonicalProvider ? 0 : 1;
+              };
               const rank = (state: QuotaState) => state.kind === 'error' ? 3
                 : state.kind === 'ready' && state.snapshot.windows.length > 0 ? 1
                 : 2;
@@ -234,7 +250,7 @@ export function createQuotaExtension(options: QuotaExtensionOptions = {}) {
           if (!current || generation !== commandGeneration) return;
           const visibleStates = args.trim() === '--all'
             ? ordered : ordered.filter(state => state.kind === 'ready');
-          const card = captureAllUsage(visibleStates, Date.now(), currentProvider);
+          const card = captureAllUsage(visibleStates, Date.now(), canonicalProvider);
           hasUsageSnapshot = true;
           pi.appendEntry<UsageCard>(USAGE_ENTRY, card);
           // Custom entry renderers are TUI-only; RPC clients still get readable output.
