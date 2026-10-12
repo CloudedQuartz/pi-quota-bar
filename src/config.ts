@@ -1,4 +1,5 @@
 import { createDeepSeekAdapter } from './query/deepseek.ts';
+import { createExecAdapter, validateExecOptions } from './query/exec.ts';
 import { createNewApiAdapter, validateNewApiOptions } from './query/new-api.ts';
 import { createOpenCodeGoAdapter } from './query/opencode-go.ts';
 import { createSub2ApiAdapter } from './query/sub2api.ts';
@@ -11,6 +12,7 @@ import type { FooterWindows } from './bar/quota.ts';
 export type ProviderQuotaConfig =
   | ({ adapter: 'new-api'; quotaPerUnit: number; currency: string } & Pick<NewApiOptions, 'dashboardAccessToken' | 'dashboardUserId'>)
   | ({ adapter: 'yescode' } & YesCodeOptions)
+  | { adapter: 'exec'; command: string[]; label: string }
   | { adapter: 'deepseek' | 'sub2api' | 'opencode-go' };
 export interface QuotaConfig { providers: Record<string, ProviderQuotaConfig>; footerWindows?: FooterWindows }
 
@@ -39,7 +41,7 @@ function parseFooterWindows(value: unknown): FooterWindows {
 export class QuotaConfigError extends Error {
   constructor() {
     // Settings may accidentally contain secrets. Never echo content/values.
-    super('Invalid settings.json quotaUsage. Use providers with adapter "new-api", "deepseek", "sub2api", "opencode-go" or "yescode", and optionally footerWindows as a positive integer or "all".');
+    super('Invalid settings.json quotaUsage. Use providers with adapter "new-api", "deepseek", "sub2api", "opencode-go", "yescode" or "exec", and optionally footerWindows as a positive integer or "all".');
   }
 }
 
@@ -74,6 +76,13 @@ export function parseQuotaConfig(value: unknown): QuotaConfig {
       } catch { throw new QuotaConfigError(); }
       continue;
     }
+    if (item.adapter === 'exec') {
+      if (Object.keys(item).some(key => !['adapter', 'command', 'label'].includes(key))) throw new QuotaConfigError();
+      try {
+        providers[provider] = { adapter: 'exec', ...validateExecOptions(item) };
+      } catch { throw new QuotaConfigError(); }
+      continue;
+    }
     if (item.adapter !== 'new-api'
       || Object.keys(item).some(key => !['adapter', 'quotaPerUnit', 'currency', ...DASHBOARD_KEYS].includes(key))
       || (item.quotaPerUnit !== undefined && typeof item.quotaPerUnit !== 'number')
@@ -102,6 +111,7 @@ export function loadQuotaAdaptersFromSettings(settings: unknown): QuotaAdapter[]
       case 'sub2api': return createSub2ApiAdapter(provider);
       case 'opencode-go': return createOpenCodeGoAdapter(provider);
       case 'yescode': return createYesCodeAdapter(provider, options);
+      case 'exec': return createExecAdapter(provider, options);
       case 'new-api': return createNewApiAdapter(provider, options);
     }
   });

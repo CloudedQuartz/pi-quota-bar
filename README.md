@@ -32,7 +32,8 @@ Add bindings in global `~/.pi/agent/settings.json` under `quotaUsage` (not proje
       "my-new-api": { "adapter": "new-api", "quotaPerUnit": 500000, "currency": "USD" },
       "deepseek": { "adapter": "deepseek" },
       "opencode-go-2": { "adapter": "opencode-go" },
-      "yes-vg": { "adapter": "yescode", "username": "you@example.com", "password": "..." }
+      "yes-vg": { "adapter": "yescode", "username": "you@example.com", "password": "..." },
+      "my-script": { "adapter": "exec", "command": ["my-quota-cli", "--json"], "label": "My Script" }
     }
   }
 }
@@ -47,6 +48,7 @@ Use the **exact Pi provider ID**. Built-in providers and explicitly bound provid
 | `deepseek` | Official `/user/balance` | Balance only; no invented spend |
 | `opencode-go` | Official `https://opencode.ai/zen/go/v1/usage` | 5h/1w/30d windows, same as the built-in `opencode-go` adapter |
 | `yescode` | `co.yes.vg` login → session → `/api/v1/auth/profile` + `/api/v1/user/balance` | Wallet (subscription + pay-as-you-go) plus daily/weekly subscription windows |
+| `exec` | Runs `command` as argv (no shell), parses stdout as a `QuotaSnapshot` JSON | Whatever the command reports; `fetchedAt` is stamped by the adapter, never by the command |
 
 Bind `opencode-go` to a second OpenCode Go account: register it as its own Pi provider in `models.json` with its own `apiKey` (e.g. `opencode-go-2`), then bind that ID here. The built-in `opencode-go` binding is implicit and needs no entry; the reserved IDs `openai-codex`, `kimi-coding` and `opencode-go` cannot be rebound.
 
@@ -55,6 +57,8 @@ Sub2API accepts no extra settings; it preserves deployment subpaths. Rate-only k
 For new-api, `quotaPerUnit` defaults to `500000`, `currency` to `USD`. Optionally add `dashboardAccessToken` (console system access token) and `dashboardUserId` (positive numeric ID required by some old forks) to that provider. This PAT is the **only** optional secret kept in settings. The account endpoint takes precedence; failures fall back to the key-native billing and token usage paths. Without a PAT, an API key cannot read the dashboard account quota. A finite key reports a quota bar only when `total_granted` is present and consistent with used plus remaining; otherwise it shows a balance and lifetime spend, without inventing a limit. Values in settings and server error bodies are never logged.
 
 For YesCode, `username` is the account email and `password` the account password; both stay in global `settings.json`, which is the trade-off of this adapter. YesCode rejects API keys on account endpoints ("requires a user session or JWT"), so the adapter logs in via `/api/v1/auth/login`, caches the issued cookie/JWT in memory for ~23 hours, and re-logs in once on an auth failure. The model `cr_` key is never sent to account endpoints; it only pins the provider to the official `co.yes.vg` origin. Balances are summed from subscription and pay-as-you-go; daily/weekly windows appear only when the account actually has those caps.
+
+Exec runs the configured argv without a shell and parses stdout as a `QuotaSnapshot` JSON object: `windows`, optional `balance`, `allowance` and `spend` — the same schema every adapter produces, enforced by the controller. `fetchedAt` is stamped by the adapter; a value from the command is ignored. The controller bounds every query (10s default) and kills the child on timeout; non-zero exits, unreadable JSON and output over 256KB become errors, and command output is never logged. The child inherits Pi's environment, so keep secrets in env vars, not in `quotaUsage`.
 
 Authenticated quota URLs must use HTTPS, except HTTP loopback for local deployments. URL userinfo, query strings, fragments and HTTP redirects are rejected; credentials never follow redirects. Fixed official endpoints reject custom origins. No browser cookie scraping or credential discovery.
 
