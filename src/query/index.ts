@@ -7,7 +7,7 @@ export { createJsonClient, createPostJsonClient, officialAuth, bearer, header } 
 export { createAliasAdapter, createDanglingAliasAdapter } from './alias.ts';
 export { createExecAdapter, validateExecOptions } from './exec.ts';
 export type { ExecOptions } from './exec.ts';
-export { codexAdapter } from './codex.ts';
+export { codexAccountId, codexAdapter } from './codex.ts';
 export { kimiAdapter } from './kimi.ts';
 export { openCodeGoAdapter, createOpenCodeGoAdapter } from './opencode-go.ts';
 export { createDeepSeekAdapter, DEEPSEEK_ORIGIN } from './deepseek.ts';
