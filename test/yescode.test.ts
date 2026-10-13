@@ -65,15 +65,15 @@ test('login prefers the cookie pair; bare JWT is the fallback', () => {
   }
 });
 
-test('account parse preserves balances and scoped spending_limits', () => {
+test('account parse preserves balances and keeps subscription limits unscoped', () => {
   const parsed = parseYesCodeAccount(balancePayload, profilePayload);
   assert.deepEqual(parsed.balances, balances);
   const [weekly, monthly] = parsed.limits;
   assert.deepEqual(weekly, { id: 'spending:subscription_weekly', label: '1w', durationSeconds: 604800,
-    scope: 'subscription', remainingPercent: 95.88, resetAt: Date.parse('2026-10-12T00:00:00Z'),
+    remainingPercent: 95.88, resetAt: Date.parse('2026-10-12T00:00:00Z'),
     amounts: { unit: 'USD', limit: 100, used: 4.12, remaining: 95.88 } });
   assert.deepEqual(monthly, { id: 'spending:subscription_monthly', label: '30d', durationSeconds: 2592000,
-    scope: 'subscription', remainingPercent: 425.88 / 430 * 100, resetAt: Date.parse('2026-11-06T00:00:00Z'),
+    remainingPercent: 425.88 / 430 * 100, resetAt: Date.parse('2026-11-06T00:00:00Z'),
     amounts: { unit: 'USD', limit: 430, used: 4.12, remaining: 425.88 } });
   validateSnapshot({ ...parsed, fetchedAt: now });
 });

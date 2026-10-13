@@ -96,8 +96,6 @@ function spendingLimitWindows(balanceData: Record<string, unknown>): UsageLimit[
     const remaining = nonNegative(item.remaining);
     const windowSeconds = numeric(item.window_seconds);
     const resetAt = timestamp(item.resets_at);
-    if (item.scope !== undefined && typeof item.scope !== 'string') throw new QuotaError('schema');
-    const scope = typeof item.scope === 'string' ? { scope: item.scope } : {};
     if (typeof item.key !== 'string' || item.key === ''
       || windowSeconds === null || !Number.isSafeInteger(windowSeconds) || windowSeconds <= 0) {
       throw new QuotaError('schema');
@@ -105,11 +103,11 @@ function spendingLimitWindows(balanceData: Record<string, unknown>): UsageLimit[
     if (limit === undefined || limit === 0) return []; // uncapped: nothing to draw
     if (spent === undefined) {
       return [{ id: `spending:${item.key}`, label: windowLabel(windowSeconds), durationSeconds: windowSeconds,
-        ...scope, remainingPercent: null, resetAt }];
+        remainingPercent: null, resetAt }];
     }
     const left = remaining ?? Math.max(0, limit - spent);
     return [{ id: `spending:${item.key}`, label: windowLabel(windowSeconds), durationSeconds: windowSeconds,
-      ...scope, remainingPercent: percent(left / limit * 100), resetAt,
+      remainingPercent: percent(left / limit * 100), resetAt,
       amounts: { unit: 'USD', limit, used: spent, remaining: left } }];
   });
   // Footer/detail convention is ascending duration (5h → 1w → 30d).
