@@ -1,10 +1,10 @@
 import { bearer } from './http.ts';
-import { numeric, object } from './parse.ts';
+import { numeric, object, percent } from './parse.ts';
 import { QuotaError } from './types.ts';
 import { safeBaseUrl } from './url.ts';
 import type { QuotaAdapter, QuotaSnapshot } from './types.ts';
 
-type Amounts = Pick<QuotaSnapshot, 'balance' | 'allowance' | 'spend'>;
+type Amounts = Omit<QuotaSnapshot, 'fetchedAt'>;
 
 export interface NewApiOptions {
   quotaPerUnit?: number;
@@ -43,9 +43,11 @@ export function parseNewApiTokenUsage(payload: unknown, options: NewApiOptions =
   if (data.object !== 'token_usage') return null;
   const used = numeric(data.total_used);
   if (used === null || !Number.isSafeInteger(used) || used < 0) throw new QuotaError('schema');
+  const spending = [{ id: 'key-lifetime', label: 'API key spend', currency,
+    amount: used / quotaPerUnit, period: 'lifetime' as const }];
   if (data.unlimited_quota === true) {
-    return { balance: { currency, remaining: 0, unlimited: true },
-      spend: { currency, lifetime: used / quotaPerUnit } };
+    return { balances: [], limits: [{ id: 'key-quota', label: 'Key quota',
+      remainingPercent: null, resetAt: null, unlimited: true }], spending };
   }
   const remaining = numeric(data.total_available);
   if (remaining === null || !Number.isSafeInteger(remaining)) throw new QuotaError('schema');
@@ -54,15 +56,17 @@ export function parseNewApiTokenUsage(payload: unknown, options: NewApiOptions =
 
   // New-api reports granted = key used + key remaining. Only draw a finite
   // allocation bar when the server actually supplies that total.
+  let limit: number | null = null;
   if (data.total_granted !== undefined) {
     const granted = numeric(data.total_granted);
     if (granted === null || !Number.isSafeInteger(granted) || granted < 0
       || !Number.isSafeInteger(used + remaining) || granted !== used + remaining) throw new QuotaError('schema');
-    if (granted > 0) return { allowance: { currency, limit: granted / quotaPerUnit,
-      used: used / quotaPerUnit, remaining: moneyLeft } };
+    limit = granted / quotaPerUnit;
   }
-  return { balance: { currency, remaining: moneyLeft },
-    spend: { currency, lifetime: used / quotaPerUnit } };
+  // Key quota is not owned account money. Missing total_granted stays unknown.
+  return { balances: [], limits: [{ id: 'key-quota', label: 'Key quota', resetAt: null,
+    remainingPercent: limit !== null && limit > 0 ? percent(moneyLeft / limit * 100) : null,
+    amounts: { unit: currency, limit, used: used / quotaPerUnit, remaining: moneyLeft } }], spending };
 }
 
 // GET /api/user/self (UserAuth): the console's own account quota, readable with
@@ -78,8 +82,9 @@ export function parseNewApiUserSelf(payload: unknown, options: NewApiOptions = {
   if (quota === null || usedQuota === null
     || !Number.isSafeInteger(quota) || !Number.isSafeInteger(usedQuota)
     || quota < 0 || usedQuota < 0) throw new QuotaError('schema');
-  return { balance: { currency, remaining: quota / quotaPerUnit },
-    spend: { currency, lifetime: usedQuota / quotaPerUnit } };
+  return { balances: [{ id: 'account', label: 'Balance', currency, remaining: quota / quotaPerUnit }],
+    limits: [], spending: [{ id: 'account-lifetime', label: 'Account spend', currency,
+      amount: usedQuota / quotaPerUnit, period: 'lifetime' }] };
 }
 
 // Legacy one-api billing pair, still the only option on older deployments.
@@ -96,10 +101,10 @@ export function parseNewApiBilling(subscription: unknown, usage: unknown, option
   const used = totalUsage / 100;
   // This endpoint reports account remaining + lifetime usage as its hard limit.
   // Top-ups change that total, so it is a wallet balance, not a fixed allowance.
-  if (limit >= 1e7) return { balance: { currency, remaining: 0, unlimited: true },
-    spend: { currency, lifetime: used } };
-  return { balance: { currency, remaining: limit - used },
-    spend: { currency, lifetime: used } };
+  const spending = [{ id: 'billing-lifetime', label: 'Reported spend', currency, amount: used, period: 'lifetime' as const }];
+  if (limit >= 1e7) return { balances: [], limits: [{ id: 'billing-quota', label: 'Quota',
+    remainingPercent: null, resetAt: null, unlimited: true }], spending };
+  return { balances: [{ id: 'account', label: 'Balance', currency, remaining: limit - used }], limits: [], spending };
 }
 
 export function createNewApiAdapter(provider: string, options: NewApiOptions = {}): QuotaAdapter {
@@ -129,7 +134,7 @@ export function createNewApiAdapter(provider: string, options: NewApiOptions = {
         if (dashboardUserId !== undefined) headers['New-Api-User'] = String(dashboardUserId);
         try {
           const payload = await context.getJson(`${root}/api/user/self`, headers, context.signal);
-          return { windows: [], ...parseNewApiUserSelf(payload, settings), fetchedAt: context.now() };
+          return { ...parseNewApiUserSelf(payload, settings), fetchedAt: context.now() };
         } catch (error) {
           if (!(error instanceof QuotaError)) throw error;
         }
@@ -145,7 +150,7 @@ export function createNewApiAdapter(provider: string, options: NewApiOptions = {
           context.getJson(`${root}/v1/dashboard/billing/usage?start_date=2020-01-01&end_date=2100-01-01`, headers, context.signal),
         ]);
         const billing = parseNewApiBilling(pair[0], pair[1], settings);
-        if (billing.balance?.unlimited !== true) return { windows: [], ...billing, fetchedAt: context.now() };
+        if (billing.balances.length > 0) return { ...billing, fetchedAt: context.now() };
         billingBalance = billing;
       } catch (error) {
         // 404: deployment has no billing pair. 401: try the key-native endpoint
@@ -157,15 +162,15 @@ export function createNewApiAdapter(provider: string, options: NewApiOptions = {
       try {
         const payload = await context.getJson(`${root}/api/usage/token/`, headers, context.signal);
         const parsed = parseNewApiTokenUsage(payload, settings);
-        if (parsed) return { windows: [], ...parsed, fetchedAt: context.now() };
+        if (parsed) return { ...parsed, fetchedAt: context.now() };
       } catch (error) {
         if (billingBalance && error instanceof QuotaError && error.code === 'http') {
-          return { windows: [], ...billingBalance, fetchedAt: context.now() };
+          return { ...billingBalance, fetchedAt: context.now() };
         }
         if (error instanceof QuotaError && error.code === 'auth') throw new QuotaError('account-access');
         throw error;
       }
-      if (billingBalance) return { windows: [], ...billingBalance, fetchedAt: context.now() };
+      if (billingBalance) return { ...billingBalance, fetchedAt: context.now() };
       throw new QuotaError('schema');
     },
   };

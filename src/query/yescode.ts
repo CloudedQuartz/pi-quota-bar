@@ -1,7 +1,7 @@
 import { officialAuth } from './http.ts';
 import { numeric, object, percent, timestamp, windowLabel } from './parse.ts';
 import { QuotaError } from './types.ts';
-import type { PostJsonResult, QuotaAdapter, QuotaSnapshot, QuotaWindow } from './types.ts';
+import type { PostJsonResult, QuotaAdapter, QuotaSnapshot, UsageLimit } from './types.ts';
 
 export const YESCODE_ORIGIN = 'https://co.yes.vg';
 
@@ -70,7 +70,7 @@ function nonNegative(value: unknown): number | undefined {
 }
 
 function limitWindow(id: string, label: string, durationSeconds: number,
-  limitRaw: unknown, usedRaw: unknown, resetAt: number | null): QuotaWindow[] {
+  limitRaw: unknown, usedRaw: unknown, resetAt: number | null): UsageLimit[] {
   const used = nonNegative(usedRaw); // validate present-but-corrupt spends even without a cap
   const limit = nonNegative(limitRaw);
   if (limit === undefined || limit === 0) return []; // no configured cap: nothing to draw
@@ -79,23 +79,25 @@ function limitWindow(id: string, label: string, durationSeconds: number,
   }
   const remaining = Math.max(0, limit - used);
   return [{ id, label, durationSeconds, remainingPercent: percent(remaining / limit * 100), resetAt,
-    amounts: { currency: 'USD', limit, used, remaining } }];
+    amounts: { unit: 'USD', limit, used, remaining } }];
 }
 
 // GET /api/v1/user/balance (optional; some accounts may lack it) merged with
 // GET /api/v1/auth/profile (required). The live response carries a generic
 // spending_limits array (scope/spent/limit/remaining/resets_at/window_seconds)
 // plus top-level weekly_* and monthly_* fields; profile is the last fallback.
-function spendingLimitWindows(balanceData: Record<string, unknown>): QuotaWindow[] | null {
+function spendingLimitWindows(balanceData: Record<string, unknown>): UsageLimit[] | null {
   if (balanceData.spending_limits === undefined) return null;
   if (!Array.isArray(balanceData.spending_limits)) throw new QuotaError('schema');
-  const windows = balanceData.spending_limits.flatMap((entry): QuotaWindow[] => {
+  const windows = balanceData.spending_limits.flatMap((entry): UsageLimit[] => {
     const item = object(entry);
     const limit = nonNegative(item.limit);
     const spent = nonNegative(item.spent);
     const remaining = nonNegative(item.remaining);
     const windowSeconds = numeric(item.window_seconds);
     const resetAt = timestamp(item.resets_at);
+    if (item.scope !== undefined && typeof item.scope !== 'string') throw new QuotaError('schema');
+    const scope = typeof item.scope === 'string' ? { scope: item.scope } : {};
     if (typeof item.key !== 'string' || item.key === ''
       || windowSeconds === null || !Number.isSafeInteger(windowSeconds) || windowSeconds <= 0) {
       throw new QuotaError('schema');
@@ -103,15 +105,15 @@ function spendingLimitWindows(balanceData: Record<string, unknown>): QuotaWindow
     if (limit === undefined || limit === 0) return []; // uncapped: nothing to draw
     if (spent === undefined) {
       return [{ id: `spending:${item.key}`, label: windowLabel(windowSeconds), durationSeconds: windowSeconds,
-        remainingPercent: null, resetAt }];
+        ...scope, remainingPercent: null, resetAt }];
     }
     const left = remaining ?? Math.max(0, limit - spent);
     return [{ id: `spending:${item.key}`, label: windowLabel(windowSeconds), durationSeconds: windowSeconds,
-      remainingPercent: percent(left / limit * 100), resetAt,
-      amounts: { currency: 'USD', limit, used: spent, remaining: left } }];
+      ...scope, remainingPercent: percent(left / limit * 100), resetAt,
+      amounts: { unit: 'USD', limit, used: spent, remaining: left } }];
   });
   // Footer/detail convention is ascending duration (5h → 1w → 30d).
-  return windows.sort((a, b) => a.durationSeconds - b.durationSeconds);
+  return windows.sort((a, b) => a.durationSeconds! - b.durationSeconds!);
 }
 
 export function parseYesCodeAccount(balancePayload: unknown, profilePayload: unknown): Omit<QuotaSnapshot, 'fetchedAt'> {
@@ -122,21 +124,20 @@ export function parseYesCodeAccount(balancePayload: unknown, profilePayload: unk
   const paygo = optionalAmount(balanceData.pay_as_you_go_balance ?? profile.pay_as_you_go_balance);
   if (subscription === undefined && paygo === undefined) throw new QuotaError('schema');
 
-  const weekStart = timestamp(profile.last_week_reset);
-  const monthStart = timestamp(profile.last_month_reset);
-  const windows = spendingLimitWindows(balanceData) ?? [
+  const limits = spendingLimitWindows(balanceData) ?? [
     ...limitWindow('daily', '1d', 86400, balanceData.daily_limit, balanceData.daily_spent,
       timestamp(balanceData.daily_resets_at ?? balanceData.daily_reset_at)),
     ...limitWindow('weekly', '1w', 604800, balanceData.weekly_limit ?? plan.weekly_limit,
       balanceData.weekly_spent_balance ?? balanceData.weekly_spent ?? profile.current_week_spend,
-      timestamp(balanceData.weekly_resets_at ?? balanceData.weekly_reset_at)
-        ?? (weekStart === null ? null : weekStart + 604800000)),
+      timestamp(balanceData.weekly_resets_at ?? balanceData.weekly_reset_at)),
     ...limitWindow('monthly', '30d', 2592000, balanceData.monthly_spend_limit ?? plan.monthly_spend_limit,
       balanceData.monthly_spent_balance ?? balanceData.monthly_spent ?? profile.current_month_spend,
-      timestamp(balanceData.monthly_resets_at ?? balanceData.monthly_reset_at)
-        ?? (monthStart === null ? null : monthStart + 2592000000)),
+      timestamp(balanceData.monthly_resets_at ?? balanceData.monthly_reset_at)),
   ];
-  return { windows, balance: { currency: 'USD', remaining: (subscription ?? 0) + (paygo ?? 0) } };
+  return { limits, balances: [
+    ...(subscription !== undefined ? [{ id: 'subscription', label: 'Subscription', currency: 'USD', remaining: subscription }] : []),
+    ...(paygo !== undefined ? [{ id: 'paygo', label: 'Pay-as-you-go', currency: 'USD', remaining: paygo }] : []),
+  ], spending: [] };
 }
 
 export function createYesCodeAdapter(provider: string, options: YesCodeOptions): QuotaAdapter {

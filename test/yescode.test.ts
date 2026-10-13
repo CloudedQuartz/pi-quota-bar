@@ -31,6 +31,10 @@ const balancePayload = {
   monthly_spend_limit: 430, monthly_spent_balance: 4.12, monthly_reset_at: '2026-11-06T00:00:00Z',
 };
 // Legacy shape without spending_limits (top-level fields only).
+const balances = [
+  { id: 'subscription', label: 'Subscription', currency: 'USD', remaining: 95.88 },
+  { id: 'paygo', label: 'Pay-as-you-go', currency: 'USD', remaining: 21.86 },
+];
 const flatBalancePayload = {
   subscription_balance: '95.88', pay_as_you_go_balance: '21.86',
   daily_limit: 20, daily_spent: 3, daily_resets_at: '2026-10-08T00:00:00Z',
@@ -61,25 +65,25 @@ test('login prefers the cookie pair; bare JWT is the fallback', () => {
   }
 });
 
-test('account parse: wallet is subscription + paygo; spending_limits drive monthly/weekly windows', () => {
+test('account parse preserves balances and scoped spending_limits', () => {
   const parsed = parseYesCodeAccount(balancePayload, profilePayload);
-  assert.deepEqual(parsed.balance, { currency: 'USD', remaining: 117.74 });
-  const [weekly, monthly] = parsed.windows;
+  assert.deepEqual(parsed.balances, balances);
+  const [weekly, monthly] = parsed.limits;
   assert.deepEqual(weekly, { id: 'spending:subscription_weekly', label: '1w', durationSeconds: 604800,
-    remainingPercent: 95.88, resetAt: Date.parse('2026-10-12T00:00:00Z'),
-    amounts: { currency: 'USD', limit: 100, used: 4.12, remaining: 95.88 } });
+    scope: 'subscription', remainingPercent: 95.88, resetAt: Date.parse('2026-10-12T00:00:00Z'),
+    amounts: { unit: 'USD', limit: 100, used: 4.12, remaining: 95.88 } });
   assert.deepEqual(monthly, { id: 'spending:subscription_monthly', label: '30d', durationSeconds: 2592000,
-    remainingPercent: 425.88 / 430 * 100, resetAt: Date.parse('2026-11-06T00:00:00Z'),
-    amounts: { currency: 'USD', limit: 430, used: 4.12, remaining: 425.88 } });
+    scope: 'subscription', remainingPercent: 425.88 / 430 * 100, resetAt: Date.parse('2026-11-06T00:00:00Z'),
+    amounts: { unit: 'USD', limit: 430, used: 4.12, remaining: 425.88 } });
   validateSnapshot({ ...parsed, fetchedAt: now });
 });
 
 test('flat top-level fields are the fallback when spending_limits is absent', () => {
   const parsed = parseYesCodeAccount(flatBalancePayload, profilePayload);
-  const [daily, weekly, monthly] = parsed.windows;
+  const [daily, weekly, monthly] = parsed.limits;
   assert.deepEqual(daily, { id: 'daily', label: '1d', durationSeconds: 86400,
     remainingPercent: 85, resetAt: Date.parse('2026-10-08T00:00:00Z'),
-    amounts: { currency: 'USD', limit: 20, used: 3, remaining: 17 } });
+    amounts: { unit: 'USD', limit: 20, used: 3, remaining: 17 } });
   assert.equal(weekly?.id, 'weekly');
   assert.equal(weekly?.resetAt, Date.parse('2026-10-12T00:00:00Z'));
   assert.equal(monthly?.id, 'monthly');
@@ -89,23 +93,23 @@ test('flat top-level fields are the fallback when spending_limits is absent', ()
   validateSnapshot({ ...parsed, fetchedAt: now });
 });
 
-test('profile-only fallback derives resets from last_*_reset; absent caps yield no windows', () => {
+test('profile-only fallback keeps reset unknown; absent caps yield no limits', () => {
   const parsed = parseYesCodeAccount(undefined, { ...profilePayload,
     current_month_spend: 4.12, last_month_reset: '2026-10-07T00:00:00+00:00',
     subscription_plan: { weekly_limit: 100, monthly_spend_limit: 430 } });
-  assert.equal(parsed.windows.length, 2);
-  assert.equal(parsed.windows[0]?.resetAt, Date.parse('2026-10-05T00:00:00Z') + 604800000);
-  assert.equal(parsed.windows[0]?.remainingPercent, 95.88);
-  assert.equal(parsed.windows[1]?.id, 'monthly');
-  assert.equal(parsed.windows[1]?.resetAt, Date.parse('2026-10-07T00:00:00Z') + 2592000000);
+  assert.equal(parsed.limits.length, 2);
+  assert.equal(parsed.limits[0]?.resetAt, null);
+  assert.equal(parsed.limits[0]?.remainingPercent, 95.88);
+  assert.equal(parsed.limits[1]?.id, 'monthly');
+  assert.equal(parsed.limits[1]?.resetAt, null);
   const uncapped = parseYesCodeAccount({ subscription_balance: 5 },
     { pay_as_you_go_balance: 2, subscription_plan: { weekly_limit: 0, monthly_spend_limit: 0 } });
-  assert.deepEqual(uncapped.windows, []);
-  assert.deepEqual(uncapped.balance, { currency: 'USD', remaining: 7 });
-  // A limit without a known spend is a window with unknown percent, not a fake 100%.
+  assert.deepEqual(uncapped.limits, []);
+  assert.deepEqual(uncapped.balances, [{ ...balances[0], remaining: 5 }, { ...balances[1], remaining: 2 }]);
+  // A limit without a known spend is unknown, not a fake 100%.
   const unknownUse = parseYesCodeAccount({ subscription_balance: 5, weekly_limit: 100 }, {});
-  assert.equal(unknownUse.windows[0]?.remainingPercent, null);
-  assert.equal(unknownUse.windows[0]?.amounts, undefined);
+  assert.equal(unknownUse.limits[0]?.remainingPercent, null);
+  assert.equal(unknownUse.limits[0]?.amounts, undefined);
 });
 
 test('account parse rejects missing balances and corrupt amounts', () => {
@@ -126,10 +130,10 @@ test('uncapped spending_limits entries are skipped; missing spend stays an hones
     { key: 'a', spent: 1, limit: 0, window_seconds: 604800 },
     { key: 'b', limit: 50, window_seconds: 86400, resets_at: '2026-10-08T00:00:00Z' },
   ] }, {});
-  assert.equal(sparse.windows.length, 1);
-  assert.equal(sparse.windows[0]?.id, 'spending:b');
-  assert.equal(sparse.windows[0]?.remainingPercent, null);
-  assert.equal(sparse.windows[0]?.amounts, undefined);
+  assert.equal(sparse.limits.length, 1);
+  assert.equal(sparse.limits[0]?.id, 'spending:b');
+  assert.equal(sparse.limits[0]?.remainingPercent, null);
+  assert.equal(sparse.limits[0]?.amounts, undefined);
 });
 
 test('query logs in once, sends the session cookie to both endpoints, and never leaks secrets', async () => {
@@ -153,7 +157,7 @@ test('query logs in once, sends the session cookie to both endpoints, and never 
   assert.deepEqual(calls[1]?.headers, { Cookie: 'yescode_auth=JWT-SECRET; yescode_csrf=CSRF-SECRET' });
   // The model key must never reach account endpoints.
   assert.equal(calls.some(call => JSON.stringify(call.headers).includes('cr_MODEL_KEY')), false);
-  assert.deepEqual(result.balance, { currency: 'USD', remaining: 117.74 });
+  assert.deepEqual(result.balances, balances);
   const serialized = JSON.stringify(result);
   for (const secret of ['PASSWORD-SECRET', 'JWT-SECRET', 'CSRF-SECRET', 'user@example.com']) {
     assert.equal(serialized.includes(secret), false);
@@ -177,7 +181,7 @@ test('a 401 invalidates the session, triggers exactly one re-login, then succeed
     },
   }));
   assert.equal(logins, 2);
-  assert.equal(result.windows[0]?.id, 'weekly');
+  assert.equal(result.limits[0]?.id, 'weekly');
   // Persistent auth failure surfaces as auth, not an infinite login loop.
   await assert.rejects(adapter.query(context({
     postJson: async () => { logins++; return { body: { token: 'JWT-SECRET' }, setCookie }; },

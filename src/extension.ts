@@ -8,7 +8,7 @@ import { createJsonClient, createPostJsonClient } from './query/http.ts';
 import { composeQuotaRegistry } from './query/settings.ts';
 import type { ProviderAuth, QuotaAdapter, QuotaState } from './query/types.ts';
 
-export const STATUS_EVENT = 'quota-bar:state:v1';
+export const STATUS_EVENT = 'quota-bar:state:v2';
 const STATUS_KEY = 'quota-bar';
 const USAGE_WIDGET = 'quota-bar:usage';
 const REFRESHING_TEXT = 'Refreshing…';
@@ -21,7 +21,7 @@ export interface QuotaExtensionOptions {
   providers?: readonly string[]; // Extra configured quota providers to include in /usage
   aliases?: Record<string, string>; // alias provider → target provider; shares the target's account quota
   footer?: boolean; // false: query + /usage + structured events only
-  footerWindows?: FooterWindows; // footer window cap; default 2, 'all' shows every window
+  footerWindows?: FooterWindows; // footer limit cap; default 2, 'all' shows every limit
   intervalMs?: number;
   timeoutMs?: number;
 }
@@ -222,7 +222,7 @@ export function createQuotaExtension(options: QuotaExtensionOptions = {}) {
                 return provider === currentProvider || provider === canonicalProvider ? 0 : 1;
               };
               const rank = (state: QuotaState) => state.kind === 'error' ? 3
-                : state.kind === 'ready' && state.snapshot.windows.length > 0 ? 1
+                : state.kind === 'ready' && state.snapshot.limits.length > 0 ? 1
                 : 2;
               return pinned(a) - pinned(b) || rank(a.state) - rank(b.state) || a.index - b.index;
             })

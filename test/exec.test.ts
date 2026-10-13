@@ -34,13 +34,13 @@ test('exec adapter rejects bad options and unknown keys', () => {
 test('exec query runs the command, stamps fetchedAt, and passes snapshot validation', async () => {
   const adapter = createExecAdapter('my-script', {
     command: [process.execPath, '-e',
-      'process.stdout.write(JSON.stringify({ fetchedAt: 1, windows: [{ id: "d", label: "Daily", remainingPercent: 42, resetAt: null, durationSeconds: 86400 }], balance: { currency: "USD", remaining: 3.5 } }))'],
+      'process.stdout.write(JSON.stringify({ fetchedAt: 1, limits: [{ id: "d", label: "Daily", remainingPercent: 42, resetAt: null, durationSeconds: 86400 }], balances: [{ id: "wallet", label: "Balance", currency: "USD", remaining: 3.5 }], spending: [] }))'],
     label: 'My Script',
   });
   const snapshot = await adapter.query(context());
   assert.equal(snapshot.fetchedAt, now); // the command's own clock is never trusted
-  assert.equal(snapshot.windows[0]?.remainingPercent, 42);
-  assert.equal(snapshot.balance?.remaining, 3.5);
+  assert.equal(snapshot.limits[0]?.remainingPercent, 42);
+  assert.equal(snapshot.balances[0]?.remaining, 3.5);
   assert.doesNotThrow(() => validateSnapshot(snapshot));
 });
 

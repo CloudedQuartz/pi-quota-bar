@@ -1,15 +1,15 @@
 import { bearer, officialAuth } from './http.ts';
 import { numeric, object, percent, timestamp, windowLabel } from './parse.ts';
 import { QuotaError } from './types.ts';
-import type { QuotaAdapter, QuotaWindow } from './types.ts';
+import type { QuotaAdapter, UsageLimit } from './types.ts';
 
 const units: Record<string, number> = {
   TIME_UNIT_SECOND: 1, TIME_UNIT_MINUTE: 60, TIME_UNIT_HOUR: 3600, TIME_UNIT_DAY: 86400,
 };
 
-export function parseKimi(payload: unknown): QuotaWindow[] {
+export function parseKimi(payload: unknown): UsageLimit[] {
   const data = object(payload);
-  const windows: QuotaWindow[] = [];
+  const windows: UsageLimit[] = [];
   const add = (raw: unknown, duration: number, id: string) => {
     const detail = object(raw);
     const limit = numeric(detail.limit);
@@ -38,7 +38,7 @@ export function parseKimi(payload: unknown): QuotaWindow[] {
     }
   }
   if (windows.length === 0) throw new QuotaError('schema');
-  return windows.sort((a, b) => a.durationSeconds - b.durationSeconds);
+  return windows.sort((a, b) => a.durationSeconds! - b.durationSeconds!);
 }
 
 export const kimiAdapter: QuotaAdapter = {
@@ -48,6 +48,6 @@ export const kimiAdapter: QuotaAdapter = {
     const data = await context.getJson('https://api.kimi.com/coding/v1/usages', {
       Authorization: `Bearer ${bearer(auth)}`,
     }, context.signal);
-    return { windows: parseKimi(data), fetchedAt: context.now() };
+    return { balances: [], limits: parseKimi(data), spending: [], fetchedAt: context.now() };
   },
 };

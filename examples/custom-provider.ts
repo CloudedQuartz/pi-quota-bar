@@ -21,8 +21,10 @@ const customAdapter: QuotaAdapter = {
     if (remaining === null) throw new QuotaError('schema');
     return {
       fetchedAt: context.now(),
-      windows: [{ id: 'daily', label: '1d', durationSeconds: 86400,
+      balances: [],
+      limits: [{ id: 'daily', label: '1d', durationSeconds: 86400,
         remainingPercent: percent(remaining), resetAt: timestamp(data.reset_at) }],
+      spending: [],
     };
   },
 };

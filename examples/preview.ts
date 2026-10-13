@@ -10,10 +10,10 @@ const paint: Paint = process.env.NO_COLOR !== undefined ? (_tone, text) => text
   : (tone, text) => `\x1b[${colors[tone]}m${text}\x1b[0m`;
 function mock(short: number, weekly: number): QuotaState {
   return { kind: 'ready', provider: 'openai-codex', label: 'Codex', snapshot: {
-    fetchedAt: now, windows: [
+    fetchedAt: now, balances: [], limits: [
       { id: '5h', label: '5h', durationSeconds: 18000, remainingPercent: short, resetAt: now + 8100000 },
       { id: '1w', label: '1w', durationSeconds: 604800, remainingPercent: weekly, resetAt: now + 442800000 },
-    ],
+    ], spending: [],
   } };
 }
 console.log('MOCK DATA — no live queries\n');

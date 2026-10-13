@@ -24,8 +24,11 @@ function state(payload: unknown): QuotaState {
 test('wallet balance and API-key spend have different labels; spend stays out of footer', () => {
   const result = state(wallet);
   assert.deepEqual(result.kind === 'ready' && result.snapshot, {
-    windows: [], balance: { currency: 'USD', remaining: 940 },
-    spend: { currency: 'USD', today: 2.5, lifetime: 80 }, fetchedAt: now,
+    limits: [], balances: [{ id: 'wallet', label: 'Balance', currency: 'USD', remaining: 940 }],
+    spending: [
+      { id: 'key-today', label: 'API key spend', currency: 'USD', amount: 2.5, period: 'today' },
+      { id: 'key-lifetime', label: 'API key spend', currency: 'USD', amount: 80, period: 'lifetime' },
+    ], fetchedAt: now,
   });
   assert.equal(renderFooter(result), 'Bal $940.00 ');
   assert.deepEqual(renderUsage(result), [
@@ -40,9 +43,10 @@ test('finite key quota and rate windows stay separate; no invented reset for fix
   });
   assert.equal(result.kind, 'ready');
   if (result.kind !== 'ready') return;
-  assert.deepEqual(result.snapshot.allowance, { currency: 'USD', limit: 100, used: 15, remaining: 85 });
-  assert.deepEqual(result.snapshot.windows.map(w => [w.id, w.durationSeconds, w.remainingPercent]), [['rate-5h', 18000, 75]]);
-  assert.equal(renderFooter(result, undefined, now), 'Quota [▇] $85.00 · 5h [▆] 75% ↺ 4h ');
+  assert.deepEqual(result.snapshot.limits[0], { id: 'key-quota', label: 'Key quota', resetAt: null,
+    remainingPercent: 85, amounts: { unit: 'USD', limit: 100, used: 15, remaining: 85 } });
+  assert.deepEqual(result.snapshot.limits.slice(1).map(w => [w.id, w.durationSeconds, w.remainingPercent]), [['rate-5h', 18000, 75]]);
+  assert.equal(renderFooter(result, undefined, now), 'Key quota [▇] $85.00 · 5h [▆] 75% ↺ 4h ');
   assert.ok(renderUsage(result, undefined, now).some(line => line.includes('$30.00/$40.00')));
 });
 
@@ -52,22 +56,23 @@ test('rate-only key needs no top-level unit; subscription zero caps are not fabr
   });
   assert.equal(rateOnly.kind, 'ready');
   if (rateOnly.kind !== 'ready') return;
-  assert.equal(rateOnly.snapshot.windows[0].amounts?.currency, 'USD');
-  assert.equal(rateOnly.snapshot.windows[0].resetAt, null);
+  assert.equal(rateOnly.snapshot.limits[0].amounts?.unit, 'USD');
+  assert.equal(rateOnly.snapshot.limits[0].resetAt, null);
   const subscription = state({ mode: 'unrestricted', isValid: true, unit: 'USD',
     subscription: { daily_usage_usd: 2, daily_limit_usd: 10, weekly_usage_usd: 5, weekly_limit_usd: 20,
       monthly_usage_usd: 0, monthly_limit_usd: null, weekly_window_start: '2026-09-01T00:00:00Z' },
   });
   assert.equal(subscription.kind, 'ready');
   if (subscription.kind !== 'ready') return;
-  assert.deepEqual(subscription.snapshot.windows.map(w => [w.label, w.remainingPercent]), [['1d', 80], ['1w', 75]]);
+  assert.deepEqual(subscription.snapshot.limits.map(w => [w.label, w.remainingPercent]), [['1d', 80], ['1w', 75]]);
+  assert.equal(subscription.snapshot.limits[1].resetAt, null, 'window start alone does not specify next reset');
 });
 
 test('malformed limits and unknown windows never become a made-up daily quota', () => {
   for (const payload of [
     {}, { mode: 'quota_limited', isValid: true, rate_limits: [{ window: '9h', limit: 10, used: 1, remaining: 9 }] },
     { mode: 'quota_limited', isValid: true, rate_limits: [{ window: '5h', limit: 0, used: 0, remaining: 0 }] },
-    { mode: 'quota_limited', isValid: true, usage: { total: { actual_cost: 10 } } },
+    { mode: 'quota_limited', isValid: true, usage: { total: { actual_cost: 'corrupt' } } },
     { mode: 'unrestricted', isValid: true, unit: 'USD', subscription: { daily_limit_usd: 10 } },
   ]) assert.throws(() => parseSub2ApiUsage(payload), QuotaError);
 });

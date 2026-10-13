@@ -1,7 +1,7 @@
 import { bearer, officialAuth } from './http.ts';
 import { numeric, object, percent, timestamp, windowLabel } from './parse.ts';
 import { QuotaError } from './types.ts';
-import type { QuotaAdapter, QuotaWindow } from './types.ts';
+import type { QuotaAdapter, UsageLimit } from './types.ts';
 
 // OpenCode Go (opencode.ai Zen Go plan) is a single official deployment, so the
 // window keys are fixed and undecorated: percent is already "used", and there is
@@ -12,9 +12,9 @@ const WINDOWS = [
   { key: 'monthly', duration: 2592000 }, // 30 days
 ] as const;
 
-export function parseOpenCodeGo(payload: unknown): QuotaWindow[] {
+export function parseOpenCodeGo(payload: unknown): UsageLimit[] {
   const usage = object(object(payload).usage);
-  const windows: QuotaWindow[] = [];
+  const windows: UsageLimit[] = [];
   for (const { key, duration } of WINDOWS) {
     if (usage[key] === undefined) continue;
     const detail = object(usage[key]);
@@ -41,7 +41,7 @@ export function createOpenCodeGoAdapter(provider: string): QuotaAdapter {
       const data = await context.getJson('https://opencode.ai/zen/go/v1/usage', {
         Authorization: `Bearer ${bearer(auth)}`,
       }, context.signal);
-      return { windows: parseOpenCodeGo(data), fetchedAt: context.now() };
+      return { balances: [], limits: parseOpenCodeGo(data), spending: [], fetchedAt: context.now() };
     },
   };
 }

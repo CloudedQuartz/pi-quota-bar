@@ -2,7 +2,7 @@ import { bearer } from './http.ts';
 import { numeric, object, percent, timestamp } from './parse.ts';
 import { QuotaError } from './types.ts';
 import { safeBaseUrl } from './url.ts';
-import type { AccountBalance, QuotaAdapter, QuotaAllowance, QuotaSnapshot, QuotaWindow, ProviderAuth, SpendSummary } from './types.ts';
+import type { Balance, LimitAmounts, QuotaAdapter, QuotaSnapshot, UsageLimit, ProviderAuth, Spending } from './types.ts';
 
 export function sub2ApiUsageUrl(baseUrl: string | undefined): string {
   const url = safeBaseUrl(baseUrl);
@@ -23,23 +23,21 @@ function amount(value: unknown): number {
   return result;
 }
 
-function allowance(data: Record<string, unknown>, unit: string): QuotaAllowance {
+function allowance(data: Record<string, unknown>, unit: string): LimitAmounts {
   const limit = amount(data.limit);
   if (limit === 0) throw new QuotaError('schema');
   const used = amount(data.used);
   const remaining = amount(data.remaining);
-  return { currency: unit, limit, used, remaining };
+  return { unit, limit, used, remaining };
 }
 
-function spend(data: Record<string, unknown>, unit: string): SpendSummary | undefined {
-  const today = object(data.today);
-  const total = object(data.total);
-  const todayCost = numeric(today.actual_cost);
-  const lifetimeCost = numeric(total.actual_cost);
-  if (todayCost === null && lifetimeCost === null) return undefined;
-  if ((todayCost !== null && todayCost < 0) || (lifetimeCost !== null && lifetimeCost < 0)) throw new QuotaError('schema');
-  return { currency: unit, ...(todayCost !== null ? { today: todayCost } : {}),
-    ...(lifetimeCost !== null ? { lifetime: lifetimeCost } : {}) };
+function spend(data: Record<string, unknown>, currency: string): Spending[] {
+  return [['today', data.today], ['lifetime', data.total]].flatMap(([period, raw]) => {
+    const cost = object(raw).actual_cost;
+    if (cost === undefined) return [];
+    return [{ id: `key-${period}`, label: 'API key spend', currency, amount: amount(cost),
+      period: period as 'today' | 'lifetime' }];
+  });
 }
 
 function percentFromAmounts(remaining: number, limit: number): number {
@@ -48,16 +46,16 @@ function percentFromAmounts(remaining: number, limit: number): number {
 
 const RATE_WINDOWS: Record<string, number> = { '5h': 18000, '1d': 86400, '7d': 604800 };
 
-function rateWindow(data: Record<string, unknown>, unit: string): QuotaWindow {
+function rateWindow(data: Record<string, unknown>): UsageLimit {
   const label = data.window;
   if (typeof label !== 'string' || !Object.hasOwn(RATE_WINDOWS, label)) throw new QuotaError('schema');
-  const limits = allowance(data, unit);
+  const limits = allowance(data, 'USD');
   return { id: `rate-${label}`, label, durationSeconds: RATE_WINDOWS[label],
-    remainingPercent: percentFromAmounts(limits.remaining, limits.limit),
+    remainingPercent: percentFromAmounts(limits.remaining, limits.limit!),
     resetAt: timestamp(data.reset_at), amounts: limits };
 }
 
-function subscriptionWindows(data: Record<string, unknown>, unit: string): QuotaWindow[] {
+function subscriptionWindows(data: Record<string, unknown>): UsageLimit[] {
   const specs = [
     ['daily', '1d', 'daily_usage_usd', 'daily_limit_usd', 86400],
     ['weekly', '1w', 'weekly_usage_usd', 'weekly_limit_usd', 604800],
@@ -70,10 +68,9 @@ function subscriptionWindows(data: Record<string, unknown>, unit: string): Quota
     if (limit === 0) return []; // No cap for this period; no percentage can be computed.
     const used = numeric(data[usedKey]);
     if (used === null || used < 0) throw new QuotaError('schema');
-    const amounts: QuotaAllowance = { currency: unit, limit, used, remaining: Math.max(0, limit - used) };
-    const start = id === 'weekly' ? timestamp(data.weekly_window_start) : null;
+    const amounts: LimitAmounts = { unit: 'USD', limit, used, remaining: Math.max(0, limit - used) };
     return [{ id, label, durationSeconds, remainingPercent: percentFromAmounts(amounts.remaining, limit),
-      resetAt: start === null ? null : start + durationSeconds * 1000, amounts }];
+      resetAt: null, amounts }];
   });
 }
 
@@ -86,27 +83,29 @@ export function parseSub2ApiUsage(payload: unknown): Omit<QuotaSnapshot, 'fetche
   // Sub2API rate limits are always USD; a fixed quota carries its own unit.
   const unit = currency(body.unit ?? (body.mode === 'quota_limited'
     ? object(body.quota).unit ?? 'USD' : undefined));
-  const windows: QuotaWindow[] = [];
-  let balance: AccountBalance | undefined;
-  let finiteQuota: QuotaAllowance | undefined;
+  const limits: UsageLimit[] = [];
+  const balances: Balance[] = [];
   if (body.mode === 'quota_limited') {
-    const quota = body.quota === undefined ? undefined : allowance(object(body.quota), unit);
-    finiteQuota = quota;
+    if (body.quota !== undefined) {
+      const amounts = allowance(object(body.quota), unit);
+      limits.push({ id: 'key-quota', label: 'Key quota', resetAt: null,
+        remainingPercent: percentFromAmounts(amounts.remaining, amounts.limit!), amounts });
+    }
     const rates = body.rate_limits;
     if (rates !== undefined) {
       if (!Array.isArray(rates)) throw new QuotaError('schema');
-      rates.forEach(entry => windows.push(rateWindow(object(entry), unit)));
+      rates.forEach(entry => limits.push(rateWindow(object(entry))));
     }
   } else if (body.subscription !== undefined) {
-    windows.push(...subscriptionWindows(object(body.subscription), unit));
-  } else {
-    const remaining = amount(body.remaining ?? body.balance);
-    balance = { currency: unit, remaining };
+    limits.push(...subscriptionWindows(object(body.subscription)));
+  } else if (body.remaining !== undefined || body.balance !== undefined) {
+    const remaining = numeric(body.remaining ?? body.balance);
+    if (remaining === null) throw new QuotaError('schema');
+    balances.push({ id: 'wallet', label: 'Balance', currency: unit, remaining });
   }
-  const usage = spend(object(body.usage), unit);
-  if (windows.length === 0 && !balance && !finiteQuota) throw new QuotaError('schema');
-  return { windows, ...(balance ? { balance } : {}), ...(finiteQuota ? { allowance: finiteQuota } : {}),
-    ...(usage ? { spend: usage } : {}) };
+  const spending = spend(object(body.usage), unit);
+  if (limits.length + balances.length + spending.length === 0) throw new QuotaError('schema');
+  return { limits, balances, spending };
 }
 
 export function createSub2ApiAdapter(provider: string): QuotaAdapter {

@@ -1,7 +1,7 @@
 import { bearer, header, officialAuth } from './http.ts';
 import { numeric, object, percent, safeLabel, timestamp, windowLabel } from './parse.ts';
 import { QuotaError } from './types.ts';
-import type { QuotaAdapter, QuotaWindow } from './types.ts';
+import type { QuotaAdapter, UsageLimit } from './types.ts';
 
 // Decode only to obtain routing metadata from the same resolved token.
 // This does not verify a JWT; the official server verifies authentication.
@@ -13,9 +13,9 @@ export function codexAccountId(token: string): string | undefined {
   } catch { return undefined; }
 }
 
-export function parseCodex(payload: unknown, now: number): QuotaWindow[] {
+export function parseCodex(payload: unknown, now: number): UsageLimit[] {
   const data = object(payload);
-  const windows: QuotaWindow[] = [];
+  const windows: UsageLimit[] = [];
   const addDomain = (raw: unknown, domain: string, scope?: string) => {
     const rate = object(raw);
     for (const [key, fallback] of [['primary_window', 18000], ['secondary_window', 604800]] as const) {
@@ -60,6 +60,6 @@ export const codexAdapter: QuotaAdapter = {
       Origin: 'https://chatgpt.com', Referer: 'https://chatgpt.com/',
     }, context.signal);
     const now = context.now();
-    return { windows: parseCodex(data, now), fetchedAt: now };
+    return { balances: [], limits: parseCodex(data, now), spending: [], fetchedAt: now };
   },
 };

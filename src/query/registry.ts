@@ -1,6 +1,6 @@
 import { safeLabel } from './parse.ts';
 import { QuotaError } from './types.ts';
-import type { AccountBalance, QuotaAdapter, QuotaAllowance, QuotaSnapshot, SpendSummary } from './types.ts';
+import type { LimitAmounts, QuotaAdapter, QuotaSnapshot } from './types.ts';
 
 export class AdapterRegistry {
   private readonly adapters = new Map<string, QuotaAdapter>();
@@ -25,58 +25,83 @@ export class AdapterRegistry {
   }
 }
 
-// Validate even custom adapter output before it reaches the bar.
-export function validateSnapshot(snapshot: QuotaSnapshot): QuotaSnapshot {
-  if (!snapshot || !Number.isFinite(snapshot.fetchedAt) || !Array.isArray(snapshot.windows)
-    || (snapshot.windows.length === 0 && snapshot.balance === undefined
-      && snapshot.allowance === undefined)
-    || snapshot.windows.length > 64) throw new QuotaError('schema');
-  let balance: AccountBalance | undefined;
-  if (snapshot.balance !== undefined) {
-    const data = snapshot.balance;
-    if (!data || typeof data.currency !== 'string' || !/^[A-Z]{3}$/.test(data.currency)
-      || !Number.isFinite(data.remaining)
-      || (data.unlimited !== undefined && typeof data.unlimited !== 'boolean')) throw new QuotaError('schema');
-    balance = { currency: data.currency, remaining: data.remaining,
-      ...(data.unlimited === true ? { unlimited: true } : {}) };
-  }
-  const allowance = snapshot.allowance === undefined ? undefined : validateAllowance(snapshot.allowance);
-  let spend: SpendSummary | undefined;
-  if (snapshot.spend !== undefined) {
-    const data = snapshot.spend;
-    if (!data || typeof data.currency !== 'string' || !/^[A-Z]{3}$/.test(data.currency)
-      || (data.today === undefined && data.lifetime === undefined)
-      || (data.today !== undefined && (!Number.isFinite(data.today) || data.today < 0))
-      || (data.lifetime !== undefined && (!Number.isFinite(data.lifetime) || data.lifetime < 0))) {
-      throw new QuotaError('schema');
-    }
-    spend = { currency: data.currency, ...(data.today !== undefined ? { today: data.today } : {}),
-      ...(data.lifetime !== undefined ? { lifetime: data.lifetime } : {}) };
-  }
-  const ids = new Set<string>();
-  const windows = snapshot.windows.map(window => {
-    if (!window || typeof window.id !== 'string' || ids.has(window.id)
-      || typeof window.label !== 'string'
-      || (window.scope !== undefined && typeof window.scope !== 'string')
-      || !Number.isFinite(window.durationSeconds) || window.durationSeconds <= 0
-      || (window.remainingPercent !== null && (!Number.isFinite(window.remainingPercent)
-        || window.remainingPercent < 0 || window.remainingPercent > 100))
-      || (window.resetAt !== null && (!Number.isFinite(window.resetAt) || window.resetAt <= 0))) {
-      throw new QuotaError('schema');
-    }
-    ids.add(window.id);
-    return { ...window, label: safeLabel(window.label),
-      ...(window.amounts !== undefined ? { amounts: validateAllowance(window.amounts) } : {}),
-      ...(window.scope !== undefined ? { scope: safeLabel(window.scope) } : {}) };
+// Validate even custom/exec adapter output before it reaches a consumer.
+export function validateSnapshot(snapshot: unknown): QuotaSnapshot {
+  const data = record(snapshot);
+  if (!Number.isFinite(data.fetchedAt)
+    || ['windows', 'balance', 'allowance', 'spend'].some(key => key in data)) throw new QuotaError('schema');
+  const balances = entries(data.balances).map(entry => {
+    if (!isCurrency(entry.currency) || !Number.isFinite(entry.remaining)
+      || entry.unlimited !== undefined) throw new QuotaError('schema');
+    return { ...identity(entry), currency: entry.currency, remaining: entry.remaining as number };
   });
-  return { fetchedAt: snapshot.fetchedAt, windows, ...(balance ? { balance } : {}),
-    ...(allowance ? { allowance } : {}), ...(spend ? { spend } : {}) };
+  const limits = entries(data.limits).map(entry => {
+    if ((entry.scope !== undefined && typeof entry.scope !== 'string')
+      || (entry.durationSeconds !== undefined && (!Number.isFinite(entry.durationSeconds) || (entry.durationSeconds as number) <= 0))
+      || (entry.remainingPercent !== null && (!Number.isFinite(entry.remainingPercent)
+        || (entry.remainingPercent as number) < 0 || (entry.remainingPercent as number) > 100))
+      || (entry.resetAt !== null && (!Number.isFinite(entry.resetAt) || (entry.resetAt as number) <= 0))
+      || (entry.unlimited !== undefined && entry.unlimited !== true)
+      || (entry.unlimited === true && (entry.amounts !== undefined || entry.remainingPercent !== null))) {
+      throw new QuotaError('schema');
+    }
+    return { ...identity(entry), remainingPercent: entry.remainingPercent as number | null,
+      resetAt: entry.resetAt as number | null,
+      ...(entry.scope !== undefined ? { scope: label(entry.scope) } : {}),
+      ...(entry.durationSeconds !== undefined ? { durationSeconds: entry.durationSeconds as number } : {}),
+      ...(entry.amounts !== undefined ? { amounts: validateAmounts(entry.amounts) } : {}),
+      ...(entry.unlimited === true ? { unlimited: true as const } : {}) };
+  });
+  const spending = entries(data.spending).map(entry => {
+    if (!isCurrency(entry.currency) || !Number.isFinite(entry.amount) || (entry.amount as number) < 0
+      || (entry.period !== 'today' && entry.period !== 'lifetime')) throw new QuotaError('schema');
+    return { ...identity(entry), currency: entry.currency, amount: entry.amount as number, period: entry.period as 'today' | 'lifetime' };
+  });
+  if (balances.length + limits.length + spending.length === 0) throw new QuotaError('schema');
+  return { balances, limits, spending, fetchedAt: data.fetchedAt as number };
 }
 
-function validateAllowance(data: QuotaAllowance): QuotaAllowance {
-  if (!data || typeof data.currency !== 'string' || !/^[A-Z]{3}$/.test(data.currency)
-    || !Number.isFinite(data.limit) || data.limit <= 0
-    || !Number.isFinite(data.used) || data.used < 0
+function record(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new QuotaError('schema');
+  return value as Record<string, unknown>;
+}
+
+function label(value: unknown): string {
+  if (typeof value !== 'string') throw new QuotaError('schema');
+  const clean = safeLabel(value).trim();
+  if (!clean) throw new QuotaError('schema');
+  return clean;
+}
+
+function identity(data: Record<string, unknown>): { id: string; label: string } {
+  // IDs are opaque and preserved, never derived from duration, scope or label.
+  if (typeof data.id !== 'string' || !data.id || data.id !== label(data.id) || data.id.length > 64) {
+    throw new QuotaError('schema');
+  }
+  return { id: data.id, label: label(data.label) };
+}
+
+function entries(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value) || value.length > 64) throw new QuotaError('schema');
+  const ids = new Set<string>();
+  return value.map(item => {
+    const data = record(item);
+    const { id } = identity(data);
+    if (ids.has(id)) throw new QuotaError('schema');
+    ids.add(id);
+    return data;
+  });
+}
+
+function isCurrency(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Z]{3}$/.test(value);
+}
+
+function validateAmounts(value: unknown): LimitAmounts {
+  const data = record(value);
+  if ((data.limit !== null && (!Number.isFinite(data.limit) || (data.limit as number) < 0))
+    || !Number.isFinite(data.used) || (data.used as number) < 0
     || !Number.isFinite(data.remaining)) throw new QuotaError('schema');
-  return { currency: data.currency, limit: data.limit, used: data.used, remaining: data.remaining };
+  return { unit: label(data.unit), limit: data.limit as number | null,
+    used: data.used as number, remaining: data.remaining as number };
 }

@@ -32,7 +32,7 @@ test('alias adapter queries the target under the target identity', async () => {
     provider: 'main', label: 'Main',
     async query(context) {
       seenProvider = context.provider;
-      return { windows: [], balance: { currency: 'USD', remaining: 1 }, fetchedAt: context.now() };
+      return { limits: [], balances: [{ id: 'wallet', label: 'Balance', currency: 'USD', remaining: 1 }], spending: [], fetchedAt: context.now() };
     },
   };
   const alias = createAliasAdapter('main-alias', target);
@@ -46,7 +46,7 @@ test('alias adapter queries the target under the target identity', async () => {
   };
   const snapshot = await alias.query(context);
   assert.equal(seenProvider, 'main');
-  assert.equal(snapshot.balance?.remaining, 1);
+  assert.equal(snapshot.balances[0].remaining, 1);
 });
 
 test('dangling alias fails visibly instead of vanishing', async () => {

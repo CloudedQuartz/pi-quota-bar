@@ -11,8 +11,24 @@ import { captureUsage, usageCardComponent } from '../src/bar/card.ts';
 
 const payload = { code: true, message: 'ok', data: { object: 'token_usage', name: 't', total_granted: 34560000,
   total_used: 28390000, total_available: 6170000, unlimited_quota: false, model_limits_enabled: false, expires_at: 0 } };
-const balance = { currency: 'USD', remaining: 12.34 };
-const keyAllowance = { currency: 'USD', limit: 69.12, used: 56.78, remaining: 12.34 };
+const balance = { id: 'account', label: 'Balance', currency: 'USD', remaining: 12.34 };
+const keyAllowance = { id: 'key-quota', label: 'Key quota', resetAt: null,
+  remainingPercent: 12.34 / 69.12 * 100,
+  amounts: { unit: 'USD', limit: 69.12, used: 56.78, remaining: 12.34 } };
+const keyData = (limit: number | null, used: number, remaining: number, currency = 'USD') => ({
+  balances: [], limits: [{ id: 'key-quota', label: 'Key quota', resetAt: null,
+    remainingPercent: limit !== null && limit > 0 ? Math.max(0, remaining / limit * 100) : null,
+    amounts: { unit: currency, limit, used, remaining } }],
+  spending: [{ id: 'key-lifetime', label: 'API key spend', currency, amount: used, period: 'lifetime' }],
+});
+const accountData = (remaining: number, used: number, currency = 'USD', id = 'account-lifetime', label = 'Account spend') => ({
+  balances: [{ id: 'account', label: 'Balance', currency, remaining }], limits: [],
+  spending: [{ id, label, currency, amount: used, period: 'lifetime' }],
+});
+const unlimitedData = (id: string, label: string, amount: number, spendId: string, spendLabel: string) => ({
+  balances: [], limits: [{ id, label, resetAt: null, remainingPercent: null, unlimited: true }],
+  spending: [{ id: spendId, label: spendLabel, currency: 'USD', amount, period: 'lifetime' }],
+});
 const context = (overrides: Partial<QueryContext> = {}): QueryContext => ({
   provider: 'my-gateway', signal: new AbortController().signal, now: () => 100000,
   getAuth: async () => ({ apiKey: 'GATEWAY-SECRET', baseUrl: 'https://gateway.test/v1' }),
@@ -20,40 +36,41 @@ const context = (overrides: Partial<QueryContext> = {}): QueryContext => ({
 });
 
 test('new-api finite key uses its explicit granted/used/remaining, not a periodic window', () => {
-  assert.deepEqual(parseNewApiTokenUsage(payload), { allowance: keyAllowance });
+  assert.deepEqual(parseNewApiTokenUsage(payload), keyData(69.12, 56.78, 12.34));
   assert.deepEqual(parseNewApiTokenUsage({ code: true, data: { object: 'token_usage', total_granted: 2500,
     total_used: '500', total_available: '2000' } }, { quotaPerUnit: 100, currency: 'CNY' }),
-  { allowance: { currency: 'CNY', limit: 25, used: 5, remaining: 20 } });
+  keyData(25, 5, 20, 'CNY'));
   assert.deepEqual(parseNewApiTokenUsage({ code: true, data: { object: 'token_usage', total_granted: 0,
-    total_used: 0, total_available: 0 } }),
-  { balance: { currency: 'USD', remaining: 0 }, spend: { currency: 'USD', lifetime: 0 } });
+    total_used: 0, total_available: 0 } }), keyData(0, 0, 0));
   assert.deepEqual(parseNewApiTokenUsage({ code: true, data: { object: 'token_usage', total_used: 500000,
     total_available: -500000 } }),
-  { balance: { currency: 'USD', remaining: -1 }, spend: { currency: 'USD', lifetime: 1 } });
+  keyData(null, 1, -1));
   assert.deepEqual(parseNewApiTokenUsage({ code: true, data: { object: 'token_usage', total_granted: 500000,
     total_used: 600000, total_available: -100000 } }),
-  { allowance: { currency: 'USD', limit: 1, used: 1.2, remaining: -0.2 } });
+  keyData(1, 1.2, -0.2));
   assert.deepEqual(parseNewApiTokenUsage({ code: true, data: { object: 'token_usage', total_used: 500,
     unlimited_quota: true } }),
-  { balance: { currency: 'USD', remaining: 0, unlimited: true }, spend: { currency: 'USD', lifetime: 0.001 } });
+  unlimitedData('key-quota', 'Key quota', 0.001, 'key-lifetime', 'API key spend'));
 });
 
 test('legacy billing reports account balance and lifetime spend; 1e8 limit means unlimited', () => {
   assert.deepEqual(parseNewApiBilling({ object: 'billing_subscription', hard_limit_usd: 100 },
     { object: 'list', total_usage: 1525.53 }),
-  { balance: { currency: 'USD', remaining: 84.7447 }, spend: { currency: 'USD', lifetime: 15.2553 } });
+  accountData(84.7447, 15.2553, 'USD', 'billing-lifetime', 'Reported spend'));
   assert.deepEqual(parseNewApiBilling({ hard_limit_usd: 100000000 }, { total_usage: 6292511.12 }),
-  { balance: { currency: 'USD', remaining: 0, unlimited: true }, spend: { currency: 'USD', lifetime: 62925.1112 } });
+  unlimitedData('billing-quota', 'Quota', 62925.1112, 'billing-lifetime', 'Reported spend'));
   for (const pair of [[{}, {}], [{ hard_limit_usd: 100 }, {}], [{ hard_limit_usd: -1 }, { total_usage: 0 }],
     [{ hard_limit_usd: 100 }, { total_usage: -1 }]] as const) {
     assert.throws(() => parseNewApiBilling(pair[0], pair[1]), QuotaError);
   }
 });
 
-test('deepseek balance: string amounts in yuan, first valid currency wins, no fabricated usage', () => {
+test('deepseek preserves all currency balances, including debt, without fabricated usage', () => {
   assert.deepEqual(parseDeepSeekBalance({ is_available: true, balance_infos: [
-    { currency: 'CNY', total_balance: '98.07', granted_balance: '0.00', topped_up_balance: '98.07' }] }),
-    { currency: 'CNY', remaining: 98.07 });
+    { currency: 'CNY', total_balance: '98.07', granted_balance: '0.00', topped_up_balance: '98.07' },
+    { currency: 'USD', total_balance: '-1' }] }),
+    [{ id: 'CNY', label: 'Balance', currency: 'CNY', remaining: 98.07 },
+      { id: 'USD', label: 'Balance', currency: 'USD', remaining: -1 }]);
   assert.throws(() => parseDeepSeekBalance({ is_available: false, balance_infos: [] }), QuotaError);
   assert.throws(() => parseDeepSeekBalance({ balance_infos: [{ currency: 'cny', total_balance: '1' }] }), QuotaError);
 });
@@ -94,13 +111,11 @@ test('URL derivation stays on the configured origin, handles /v1 and subpath ins
 
 test('dashboard /api/user/self separates account balance from lifetime spend', () => {
   assert.deepEqual(parseNewApiUserSelf({ success: true, data: { quota: 27151218, used_quota: 1788848782 } }),
-  { balance: { currency: 'USD', remaining: 54.302436 },
-    spend: { currency: 'USD', lifetime: 3577.697564 } });
+  accountData(54.302436, 3577.697564));
   assert.deepEqual(parseNewApiUserSelf({ success: true, data: { quota: '5000', used_quota: '200' } },
     { quotaPerUnit: 100, currency: 'CNY' }),
-  { balance: { currency: 'CNY', remaining: 50 }, spend: { currency: 'CNY', lifetime: 2 } });
-  assert.deepEqual(parseNewApiUserSelf({ success: true, data: { quota: 0, used_quota: 0 } }),
-  { balance: { currency: 'USD', remaining: 0 }, spend: { currency: 'USD', lifetime: 0 } });
+  accountData(50, 2, 'CNY'));
+  assert.deepEqual(parseNewApiUserSelf({ success: true, data: { quota: 0, used_quota: 0 } }), accountData(0, 0));
   for (const payload of [{}, { success: false }, { success: true, data: { quota: 1 } },
     { success: true, data: { quota: -1, used_quota: 0 } }, { success: true, data: { quota: 1.5, used_quota: 0 } },
     { success: true, data: { quota: 1e30, used_quota: 0 } }, { success: true, data: { quota: 0, used_quota: null } }]) {
@@ -129,8 +144,7 @@ test('new-api queries billing first and a finite hard limit wins without token l
   }));
   assert.equal(authCalls, 1);
   assert.equal(calls, 2); // subscription + usage in parallel, no token request
-  assert.deepEqual(result, { windows: [], balance: { currency: 'USD', remaining: 43.22 },
-    spend: { currency: 'USD', lifetime: 56.78 }, fetchedAt: 100000 });
+  assert.deepEqual(result, { ...accountData(43.22, 56.78, 'USD', 'billing-lifetime', 'Reported spend'), fetchedAt: 100000 });
   assert.equal(JSON.stringify(result).includes('runtime-key'), false);
 });
 
@@ -151,8 +165,8 @@ test('billing 404/absent falls through to the token endpoint; auth denial maps t
     return payload;
   } }));
   assert.equal(calls, 3);
-  assert.deepEqual(result.allowance, keyAllowance);
-  assert.deepEqual(validateSnapshot(result).allowance, keyAllowance);
+  assert.deepEqual(result.limits, [keyAllowance]);
+  assert.deepEqual(validateSnapshot(result).limits, [keyAllowance]);
   calls = 0;
   await assert.rejects(createNewApiAdapter('my-gateway').query(context({ getJson: async () => {
     calls++;
@@ -179,22 +193,22 @@ test('unlimited billing falls through to a finite key quota', async () => {
     return payload;
   } }));
   assert.equal(calls, 3);
-  assert.deepEqual(result.allowance, keyAllowance);
+  assert.deepEqual(result.limits, [keyAllowance]);
 });
 
-test('snapshots may contain amounts without windows; malformed balances are rejected', () => {
-  const snapshot = { windows: [], fetchedAt: 100000, balance };
+test('snapshots may contain money without limits; malformed balances are rejected', () => {
+  const snapshot = { limits: [], spending: [], fetchedAt: 100000, balances: [balance] };
   assert.deepEqual(validateSnapshot(snapshot), snapshot);
-  assert.throws(() => validateSnapshot({ windows: [], fetchedAt: 100000 }), QuotaError);
-  for (const balance of [{ currency: 'USD', remaining: NaN },
-    { currency: 'usd', remaining: 0 }, { currency: 'USD\n', remaining: 1 }]) {
-    assert.throws(() => validateSnapshot({ ...snapshot, balance }), QuotaError);
+  assert.throws(() => validateSnapshot({ limits: [], balances: [], spending: [], fetchedAt: 100000 }), QuotaError);
+  for (const entry of [{ ...balance, remaining: NaN },
+    { ...balance, currency: 'usd' }, { ...balance, currency: 'USD\n' }]) {
+    assert.throws(() => validateSnapshot({ ...snapshot, balances: [entry] }), QuotaError);
   }
 });
 
 test('balance display is compact, aligned, without fabricated bars, percentages or reset timers', () => {
   const state: QuotaState = { kind: 'ready', provider: 'my-gateway', label: 'my-gateway',
-    snapshot: { windows: [], balance, fetchedAt: 100000 } };
+    snapshot: { limits: [], balances: [balance], spending: [], fetchedAt: 100000 } };
   assert.equal(renderFooter(state), 'Bal $12.34 ');
   assert.deepEqual(renderUsage(state), [
     'my-gateway', '', '  Balance   $12.34',
@@ -203,12 +217,12 @@ test('balance display is compact, aligned, without fabricated bars, percentages 
   assert.deepEqual(usageCardComponent(JSON.parse(JSON.stringify(card))).render(80).map(line => line.trimEnd()), renderUsage(state));
   const text = renderUsage(state).join('\n');
   assert.equal(/[↺%█]/u.test(text), false);
-  const unlimited: QuotaState = { ...state, snapshot: { ...state.snapshot,
-    balance: { currency: 'USD', remaining: 0, unlimited: true } } };
-  assert.equal(renderFooter(unlimited), 'Bal $∞ ');
-  assert.deepEqual(renderUsage(unlimited).slice(2), ['  Balance   $∞']);
+  const unlimited: QuotaState = { ...state, snapshot: { ...state.snapshot, balances: [],
+    limits: [{ id: 'key', label: 'Quota', remainingPercent: null, resetAt: null, unlimited: true }] } };
+  assert.equal(renderFooter(unlimited), 'Quota ∞ ');
+  assert.deepEqual(renderUsage(unlimited).slice(2), ['  Quota  ∞']);
   const zero: QuotaState = { ...state, snapshot: { ...state.snapshot,
-    balance: { currency: 'USD', remaining: 0 } } };
+    balances: [{ ...balance, remaining: 0 }] } };
   assert.deepEqual(renderUsage(zero).slice(2), ['  Balance   $0.00']);
   const calls: string[] = [];
   renderFooter(zero, (tone, text) => { if (text === '$0.00') calls.push(tone); return text; });
@@ -217,13 +231,13 @@ test('balance display is compact, aligned, without fabricated bars, percentages 
 
 test('key allowance shows a finite bar, while account spend never appears in the footer', () => {
   const key: QuotaState = { kind: 'ready', provider: 'key', label: 'key',
-    snapshot: { windows: [], allowance: keyAllowance, fetchedAt: 100000 } };
-  assert.equal(renderFooter(key), 'Quota [▁] $12.34 ');
+    snapshot: { balances: [], limits: [keyAllowance], spending: [], fetchedAt: 100000 } };
+  assert.equal(renderFooter(key), 'Key quota [▁] $12.34 ');
   assert.deepEqual(renderUsage(key), ['key', '',
-    '  [███░░░░░░░░░░░░░]  $12.34 left', '  Used      $56.78', '  Limit     $69.12']);
+    '  Key quota  [███░░░░░░░░░░░░░] 17.9% · $12.34/$69.12 · $56.78 used']);
   assert.equal(renderUsage(key).join('\n').includes('↺'), false);
   const account: QuotaState = { kind: 'ready', provider: 'account', label: 'account',
-    snapshot: { windows: [], balance, spend: { currency: 'USD', lifetime: 56.78 }, fetchedAt: 100000 } };
+    snapshot: { balances: [balance], limits: [], spending: [{ id: 'total', label: 'Account spend', currency: 'USD', amount: 56.78, period: 'lifetime' }], fetchedAt: 100000 } };
   assert.equal(renderFooter(account), 'Bal $12.34 ');
   assert.deepEqual(renderUsage(account), ['account', '', '  Balance   $12.34']);
 });
@@ -276,8 +290,8 @@ test('dashboard PAT is queried first and wins without billing or token lookups',
     return { success: true, data: { quota: 27151218, used_quota: 1788848782 } };
   } }));
   assert.deepEqual(seen, ['https://gateway.test/api/user/self']);
-  assert.deepEqual(result.balance, { currency: 'USD', remaining: 54.302436 });
-  assert.deepEqual(result.spend, { currency: 'USD', lifetime: 3577.697564 });
+  assert.deepEqual(result.balances, [{ ...balance, remaining: 54.302436 }]);
+  assert.deepEqual(result.spending, accountData(54.302436, 3577.697564).spending);
   assert.equal(JSON.stringify(result).includes('PAT-SECRET'), false);
   // No dashboardUserId: no legacy header on new deployments.
   await createNewApiAdapter('my-gateway', { dashboardAccessToken: 'PAT-SECRET' }).query(context({
@@ -299,8 +313,8 @@ test('dashboard /api/user/self failure falls through to the billing/token chain'
     return payload;
   } }));
   assert.equal(calls, 3); // user/self + 2 billing; finite hard limit wins without token lookup
-  assert.deepEqual(result.balance, { currency: 'USD', remaining: 43.22 });
-  assert.deepEqual(result.spend, { currency: 'USD', lifetime: 56.78 });
+  assert.deepEqual(result.balances, [{ ...balance, remaining: 43.22 }]);
+  assert.deepEqual(result.spending, accountData(43.22, 56.78, 'USD', 'billing-lifetime', 'Reported spend').spending);
   calls = 0;
   await assert.rejects(query.query(context({ getJson: async url => {
     calls++;

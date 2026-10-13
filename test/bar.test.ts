@@ -3,15 +3,19 @@ import assert from 'node:assert/strict';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { formatPercent, horizontalBar, remainingTone, renderBar, verticalBar } from '../src/bar/bar.ts';
 import { quotaElement, renderFooter, renderUsage } from '../src/bar/quota.ts';
-import type { QuotaState } from '../src/query/types.ts';
+import { aggregateCompactLines, aggregateUsageLines, captureAllUsage, usageCardComponent } from '../src/bar/card.ts';
+import type { QuotaSnapshot, QuotaState, UsageLimit } from '../src/query/types.ts';
 
 const now = Date.parse('2026-09-07T04:00:00Z');
-const state: QuotaState = { kind: 'ready', provider: 'openai-codex', label: 'Codex', snapshot: {
-  fetchedAt: now, windows: [
-    { id: '5h', label: '5h', durationSeconds: 18000, remainingPercent: 72, resetAt: now + 8100000 },
-    { id: 'weekly', label: '1w', durationSeconds: 604800, remainingPercent: 85, resetAt: now + 442800000 },
-  ],
-} };
+const limit = (id: string, label: string, pct: number | null): UsageLimit => ({
+  id, label, durationSeconds: 18000, remainingPercent: pct, resetAt: now + 8100000,
+});
+const ready = (provider: string, label: string, data: Partial<QuotaSnapshot>): Extract<QuotaState, { kind: 'ready' }> => ({
+  kind: 'ready', provider, label, snapshot: { fetchedAt: now, limits: [], balances: [], spending: [], ...data },
+});
+const state = ready('openai-codex', 'Codex', { limits: [limit('5h', '5h', 72),
+  { ...limit('weekly', '1w', 85), durationSeconds: 604800, resetAt: now + 442800000 }] });
+const wallet = (remaining: number, currency = 'USD') => ({ id: 'wallet', label: 'Balance', remaining, currency });
 
 test('exact requested footer: English, brackets, arrow spacing, no provider/remaining, trailing space', () => {
   const text = renderFooter(state, undefined, now);
@@ -22,22 +26,14 @@ test('exact requested footer: English, brackets, arrow spacing, no provider/rema
 });
 
 test('/usage uses compact horizontal bars and provider grouping', () => {
-  const lines = renderUsage(state, undefined, now);
-  assert.equal(lines[0], 'Codex');
-  assert.equal(lines[1], '');
-  assert.equal(lines[2], '  5h  [████████████░░░░]  72% ↺ 2h15m');
-  assert.equal(lines[3], '  1w  [██████████████░░]  85% ↺ 5d3h');
-  assert.equal(lines.length, 4);
+  assert.deepEqual(renderUsage(state, undefined, now), ['Codex', '',
+    '  5h  [████████████░░░░]  72% ↺ 2h15m', '  1w  [██████████████░░]  85% ↺ 5d3h']);
 });
 
 test('detail columns align for long labels, wide characters, decimals and unknown values', () => {
   const labels = ['1w', 'gpt-reserve/1w', '界/5h', 'other/1w'];
   const values = [100, 8, 99.9, null];
-  const varied: QuotaState = { ...state, snapshot: { ...state.snapshot,
-    windows: labels.map((label, i) => ({ ...state.snapshot.windows[0],
-      id: String(i), label, remainingPercent: values[i],
-    })),
-  } };
+  const varied = ready('custom', 'Custom', { limits: labels.map((label, i) => limit(String(i), label, values[i])) });
   const lines = renderUsage(varied, undefined, now).slice(2);
   for (const marker of ['[', ']', '↺']) {
     const columns = lines.map(line => visibleWidth(line.slice(0, line.indexOf(marker))));
@@ -82,108 +78,114 @@ test('expired reset becomes unknown/due, never fabricates 100%', () => {
 test('hidden/loading/error do not masquerade as measured zero', () => {
   assert.equal(renderFooter({ kind: 'hidden' }), '');
   assert.equal(renderFooter({ kind: 'loading', provider: 'a', label: 'A' }), 'Quota … ');
-  const text = renderFooter({ kind: 'error', provider: 'a', label: 'A', code: 'timeout' });
-  assert.equal(text, 'Quota ! Request timed out ');
-  assert.equal(text.includes('0%'), false);
+  assert.equal(renderFooter({ kind: 'error', provider: 'a', label: 'A', code: 'timeout' }), 'Quota ! Request timed out ');
 });
 
 test('quota composes as one element of a larger bar, independently of query implementation', () => {
   assert.equal(renderBar([
-    { id: 'context', spans: [{ text: 'ctx [▃] 32%' }] },
-    quotaElement(state, now),
+    { id: 'context', spans: [{ text: 'ctx [▃] 32%' }] }, quotaElement(state, now),
     { id: 'git', spans: [{ text: 'main' }] },
   ]), 'ctx [▃] 32% │ 5h [▆] 72% ↺ 2h15m · 1w [▇] 85% ↺ 5d3h │ main ');
 });
 
-test('footer bounds window count, details retain model-specific windows', () => {
-  const extra: QuotaState = { ...state, snapshot: { ...state.snapshot, windows: [
-    ...state.snapshot.windows,
-    { ...state.snapshot.windows[0], id: 'model', scope: 'GPT-X', remainingPercent: 5 },
-  ] } };
+test('footer caps shared limits; details retain scoped and additional limits', () => {
+  const extra = ready('codex', 'Codex', { limits: [...state.snapshot.limits,
+    { ...limit('model', '5h', 5), scope: 'GPT-X' }] });
   assert.ok(renderFooter(extra, undefined, now).endsWith(' +1 '));
   assert.ok(renderUsage(extra, undefined, now).some(line => line.startsWith('  GPT-X/5h ')));
-});
-
-test('footer caps shared windows at two by default and honours footerWindows', () => {
-  const three: QuotaState = { ...state, snapshot: { ...state.snapshot, windows: [
-    ...state.snapshot.windows,
-    { ...state.snapshot.windows[0], id: 'monthly', label: '30d', durationSeconds: 2592000,
-      remainingPercent: 58, resetAt: now + 1641600000 },
-  ] } };
+  const three = ready('codex', 'Codex', { limits: [...state.snapshot.limits, limit('monthly', '30d', 58)] });
   assert.ok(renderFooter(three, undefined, now).endsWith(' +1 '));
-  const all = renderFooter(three, undefined, now, 'all');
-  assert.ok(all.includes('5h ') && all.includes('1w ') && all.includes('30d '), all);
-  assert.equal(all.includes('+'), false);
+  assert.ok(renderFooter(three, undefined, now, 'all').includes('30d '));
+  assert.equal(renderFooter(three, undefined, now, 'all').includes('+'), false);
   assert.ok(renderFooter(three, undefined, now, 3).includes('30d '));
   assert.equal(renderFooter(three, undefined, now, 1).includes('1w '), false);
 });
 
-test('aggregate grid aligns bars, balance amounts and reset arrows across mixed rows', async () => {
-  const { aggregateUsageLines } = await import('../src/bar/card.ts');
-  const window = (id: string, label: string, pct: number) => ({ ...state.snapshot.windows[0], id, label, remainingPercent: pct });
-  const states: Exclude<QuotaState, { kind: 'loading' }>[] = [
-    { kind: 'ready', provider: 'kimi', label: 'Kimi', snapshot: { fetchedAt: now, windows: [window('5h', '5h', 100), window('1w', '1w', 97)] } },
-    { kind: 'ready', provider: 'opencode-go', label: 'OpenCode Go', snapshot: { fetchedAt: now, windows: [window('5h', '5h', 100), window('30d', '30d', 14)] } },
-    { kind: 'ready', provider: 'micu-ant', label: 'micu-ant', snapshot: { fetchedAt: now, windows: [], balance: { remaining: 41.12, currency: 'USD' } } },
-    { kind: 'ready', provider: 'ikun', label: 'ikun', snapshot: { fetchedAt: now, windows: [], balance: { remaining: 17.16, currency: 'CNY' } } },
-    { kind: 'ready', provider: 'cctq', label: 'cctq', snapshot: { fetchedAt: now, windows: [], balance: { remaining: 0, currency: 'USD', unlimited: true } } },
-    { kind: 'ready', provider: 'codex-for', label: 'codex-for', snapshot: { fetchedAt: now, windows: [],
-      balance: { remaining: 953.52, currency: 'USD' }, spend: { today: 64.89, currency: 'USD' } } },
-  ];
-  const lines = aggregateUsageLines(states, undefined, now);
-  for (const [marker, subset] of [
-    ['[', lines.filter(line => line.includes('['))],
-    ['↺', lines.filter(line => line.includes('↺'))],
-  ] as const) {
-    const columns = subset.map(line => visibleWidth(line.slice(0, line.indexOf(marker))));
+const mixed = [
+  ready('kimi', 'Kimi', { limits: [limit('5h', '5h', 100), limit('1w', '1w', 97)] }),
+  ready('opencode-go', 'OpenCode Go', { limits: [limit('5h', '5h', 100), limit('30d', '30d', 14)] }),
+  ready('micu-ant', 'micu-ant', { balances: [wallet(41.12)] }),
+  ready('ikun', 'ikun', { balances: [wallet(17.16, 'CNY')] }),
+  ready('cctq', 'cctq', { limits: [{ id: 'key', label: 'Quota', remainingPercent: null, resetAt: null, unlimited: true }] }),
+  ready('codex-for', 'codex-for', { balances: [wallet(953.52)], spending: [
+    { id: 'today', label: 'Spend', amount: 64.89, currency: 'USD', period: 'today' }] }),
+];
+
+test('aggregate grid aligns bars, balance amounts and reset arrows across mixed rows', () => {
+  const lines = aggregateUsageLines(mixed, undefined, now);
+  for (const marker of ['[', '↺']) {
+    const columns = lines.filter(line => line.includes(marker)).map(line => visibleWidth(line.slice(0, line.indexOf(marker))));
     assert.equal(new Set(columns).size, 1, `${marker} column must align`);
   }
-  const moneyLines = lines.filter(line => /[$¥]/.test(line));
-  const moneyColumns = moneyLines.map(line => visibleWidth(line.slice(0, line.search(/[$¥]/))));
+  const moneyColumns = lines.filter(line => /[$¥]/.test(line)).map(line => visibleWidth(line.slice(0, line.search(/[$¥]/))));
   assert.equal(new Set(moneyColumns).size, 1, 'balance amounts must share one column');
   assert.ok(lines.some(line => line.includes('today $64.89')));
+  assert.ok(lines.some(line => line.includes('Quota') && line.includes('∞')));
+  assert.equal(lines.some(line => line.includes('$∞')), false);
 });
 
-test('aggregate grid marks the current provider with a star and keeps columns aligned', async () => {
-  const { aggregateUsageLines } = await import('../src/bar/card.ts');
-  const window = (id: string, label: string, pct: number) => ({ ...state.snapshot.windows[0], id, label, remainingPercent: pct });
-  const states: Exclude<QuotaState, { kind: 'loading' }>[] = [
-    { kind: 'ready', provider: 'kimi', label: 'Kimi', snapshot: { fetchedAt: now, windows: [window('5h', '5h', 100), window('1w', '1w', 97)] } },
-    { kind: 'ready', provider: 'opencode-go', label: 'OpenCode Go', snapshot: { fetchedAt: now, windows: [window('5h', '5h', 100)] } },
-  ];
-  const lines = aggregateUsageLines(states, undefined, now, 12, 'kimi');
-  assert.ok(lines[0]!.startsWith('★ Kimi'), lines.join('\n'));
+test('aggregate grid marks the current provider with a star and keeps columns aligned', () => {
+  const lines = aggregateUsageLines(mixed.slice(0, 2), undefined, now, 12, 'kimi');
+  assert.ok(lines[0].startsWith('★ Kimi'), lines.join('\n'));
   assert.equal(lines.some(line => line.includes('★ OpenCode')), false);
-  const barLines = lines.filter(line => line.includes('['));
-  const columns = barLines.map(line => visibleWidth(line.slice(0, line.indexOf('['))));
+  const columns = lines.filter(line => line.includes('[')).map(line => visibleWidth(line.slice(0, line.indexOf('['))));
   assert.equal(new Set(columns).size, 1, 'star must not break bar alignment');
-  // No current provider, no star.
-  assert.equal(aggregateUsageLines(states, undefined, now).some(line => line.includes('★')), false);
+  assert.equal(aggregateUsageLines(mixed, undefined, now).some(line => line.includes('★')), false);
 });
 
-test('compact layout puts providers on header lines and never grows wide', async () => {
-  const { aggregateCompactLines } = await import('../src/bar/card.ts');
-  const window = (id: string, label: string, pct: number) => ({ ...state.snapshot.windows[0], id, label, remainingPercent: pct });
-  const states: Exclude<QuotaState, { kind: 'loading' }>[] = [
-    { kind: 'ready', provider: 'kimi', label: 'Kimi', snapshot: { fetchedAt: now, windows: [window('5h', '5h', 100), window('1w', '1w', 97)] } },
-    { kind: 'ready', provider: 'opencode-go', label: 'OpenCode Go (opencode-go-2)', snapshot: { fetchedAt: now, windows: [window('30d', '30d', 14)] } },
-    { kind: 'ready', provider: 'micu-ant', label: 'micu-ant', snapshot: { fetchedAt: now, windows: [], balance: { remaining: 41.12, currency: 'USD' } } },
-    { kind: 'error', provider: 'deepseek', label: 'DeepSeek', code: 'auth' },
-  ];
+test('compact layout puts providers on header lines and never grows wide', () => {
+  const states = [mixed[0], ready('opencode-go', 'OpenCode Go (opencode-go-2)', { limits: [limit('30d', '30d', 14)] }), mixed[2],
+    { kind: 'error' as const, provider: 'deepseek', label: 'DeepSeek', code: 'auth' as const }];
   const lines = aggregateCompactLines(states, undefined, now, 6, 'kimi');
-  assert.deepEqual(lines.map(line => line.trimEnd()), [
-    '★ Kimi',
-    '  5h   [██████] 100%  ↺ 2h15m',
-    '  1w   [█████░]  97%  ↺ 2h15m',
-    '',
-    'OpenCode Go (opencode-go-2)',
-    '  30d  [█░░░░░]  14%  ↺ 2h15m',
-    '',
-    'micu-ant  $41.12',
-    '',
-    'DeepSeek  Sign in with /login',
-  ]);
+  assert.deepEqual(lines, ['★ Kimi', '  5h   [██████] 100%  ↺ 2h15m', '  1w   [█████░]  97%  ↺ 2h15m', '',
+    'OpenCode Go (opencode-go-2)', '  30d  [█░░░░░]  14%  ↺ 2h15m', '', 'micu-ant  $41.12', '', 'DeepSeek  Sign in with /login']);
   assert.ok(lines.every(line => visibleWidth(line) <= 30), lines.join('\n'));
-  // Empty input keeps the helpful hint.
   assert.deepEqual(aggregateCompactLines([], undefined, now), ['No quota data available. Run /usage --all for details.']);
+});
+
+test('all categories render together with multiple entries and original IDs', () => {
+  const data = ready('mixed', 'Mixed', {
+    limits: [limit('first-5h', '5h', 72), { ...limit('second-5h', '5h', 60), scope: 'Model' },
+      { id: 'requests', label: 'Requests', remainingPercent: 50.1, resetAt: null,
+        amounts: { unit: 'requests', limit: 100, used: 50, remaining: 50 } },
+      { id: 'tokens', label: 'Tokens', remainingPercent: null, resetAt: null,
+        amounts: { unit: 'tokens', limit: null, used: 2000, remaining: 8000 } }],
+    balances: [{ ...wallet(12), id: 'usd', label: 'USD wallet' }, { ...wallet(-2, 'CNY'), id: 'cny', label: 'CNY wallet' }],
+    spending: [
+      { id: 'one', label: 'One', currency: 'USD', amount: 2, period: 'today' },
+      { id: 'two', label: 'Two', currency: 'CNY', amount: 3, period: 'today' },
+      { id: 'life', label: 'Lifetime', currency: 'USD', amount: 999, period: 'lifetime' }],
+  });
+  for (const text of [renderUsage(data, undefined, now).join('\n'), aggregateUsageLines([data], undefined, now).join('\n'),
+    aggregateCompactLines([data], undefined, now).join('\n')]) {
+    for (const part of ['72%', 'Model/5h', '60%', '50.1%', '50 requests/100 requests', '8,000 tokens/?',
+      'USD wallet', '$12.00', 'CNY wallet', '-¥2.00', 'Today One', '$2.00', 'Today Two', '¥3.00']) assert.ok(text.includes(part), `${part}\n${text}`);
+    assert.equal(text.includes('999'), false, 'Lifetime must not replace Today');
+    assert.equal(text.includes('$50'), false, 'request count must not be dollar money');
+  }
+  const footer = renderFooter(data, undefined, now, 'all');
+  assert.ok(footer.includes('USD wallet $12.00 · CNY wallet -¥2.00'));
+  assert.ok(footer.includes('50 requests'));
+  assert.ok(footer.includes(' +1 '), 'scoped limit remains counted even when shared limits are preferred');
+  assert.equal(footer.includes('Today'), false);
+  const card = captureAllUsage([data], now);
+  assert.deepEqual(card.version === 2 && card.states[0].kind === 'ready' && card.states[0].snapshot.limits.map(entry => entry.id),
+    ['first-5h', 'second-5h', 'requests', 'tokens']);
+  const restored = JSON.parse(JSON.stringify(card));
+  assert.deepEqual(usageCardComponent(restored).render(200), usageCardComponent(card).render(200));
+  for (const width of [1, 30, 80]) assert.ok(usageCardComponent(card).render(width).every(line => visibleWidth(line) <= width));
+});
+
+test('spend-only renders Today without fake balance/quota or displaying Lifetime', () => {
+  const data = ready('spend', 'Spend', { spending: [
+    { id: 'today', label: 'Account spend', currency: 'USD', amount: 2.5, period: 'today' },
+    { id: 'lifetime', label: 'Account spend', currency: 'USD', amount: 999, period: 'lifetime' }] });
+  assert.equal(renderFooter(data), '');
+  assert.deepEqual(renderUsage(data), ['Spend', '', '  Today     $2.50']);
+  for (const render of [aggregateUsageLines, aggregateCompactLines]) {
+    const text = render([data], undefined, now).join('\n');
+    assert.ok(text.includes('Today') && text.includes('$2.50'), text);
+    assert.equal(text.includes('999'), false);
+    assert.equal(/[↺%█]/u.test(text), false);
+  }
 });

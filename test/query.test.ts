@@ -115,7 +115,7 @@ test('OpenCode Go uses the official usage endpoint and rejects other origins', a
       return openCodeGoPayload;
     },
   }));
-  assert.deepEqual(result.windows.map(w => w.label), ['5h', '1w', '30d']);
+  assert.deepEqual(result.limits.map(w => w.label), ['5h', '1w', '30d']);
   assert.equal(result.fetchedAt, now);
   const getJson = async () => { assert.fail('Must not send credentials'); };
   for (const auth of [undefined, { apiKey: 'secret', baseUrl: 'https://proxy.invalid' }]) {
@@ -140,7 +140,7 @@ test('OpenCode Go factory binds extra accounts to their own provider ID', async 
       return openCodeGoPayload;
     },
   }));
-  assert.deepEqual(result.windows.map(w => w.label), ['5h', '1w', '30d']);
+  assert.deepEqual(result.limits.map(w => w.label), ['5h', '1w', '30d']);
 });
 
 test('Codex account is derived from the same runtime token, not another auth file', async () => {
@@ -221,14 +221,49 @@ test('HTTP errors redact response bodies, support Retry-After, and reject oversi
 });
 
 test('custom adapters register explicitly; output is validated and labels sanitized', () => {
-  const adapter = { provider: 'custom', label: 'Custom', query: async () => ({ windows: [], fetchedAt: now }) };
+  const adapter = { provider: 'custom', label: 'Custom', query: async () => ({ balances: [], limits: [], spending: [], fetchedAt: now }) };
   const registry = new AdapterRegistry([adapter]);
   assert.equal(registry.get('custom')?.provider, 'custom');
   assert.equal(registry.get('unregistered'), undefined);
   assert.throws(() => registry.register(adapter));
-  assert.throws(() => validateSnapshot({ fetchedAt: now, windows: [] }), QuotaError);
-  const window = parseKimi(kimiPayload)[0];
-  assert.throws(() => validateSnapshot({ fetchedAt: now, windows: [{ ...window, remainingPercent: NaN }] }), QuotaError);
-  assert.throws(() => validateSnapshot({ fetchedAt: now, windows: [window, window] }), QuotaError);
-  assert.equal(validateSnapshot({ fetchedAt: now, windows: [{ ...window, label: '5h\n\x1b' }] }).windows[0].label, '5h');
+  const snapshot = { fetchedAt: now, balances: [], limits: [], spending: [] };
+  assert.throws(() => validateSnapshot(snapshot), QuotaError);
+  const limit = parseKimi(kimiPayload)[0];
+  assert.throws(() => validateSnapshot({ ...snapshot, limits: [{ ...limit, remainingPercent: NaN }] }), QuotaError);
+  assert.throws(() => validateSnapshot({ ...snapshot, limits: [limit, limit] }), QuotaError);
+  assert.equal(validateSnapshot({ ...snapshot, limits: [{ ...limit, label: '5h\n\x1b' }] }).limits[0].label, '5h');
+});
+
+test('snapshot contract: legacy fields rejected, unknown is not zero, categories stay independent', () => {
+  const wallet = { id: 'wallet', label: 'Balance', currency: 'USD', remaining: -4.2 };
+  const requestLimit = { id: 'requests', label: 'Requests', remainingPercent: 80, resetAt: null,
+    amounts: { unit: 'requests', limit: null, used: 20, remaining: 80 } };
+  const spend = { id: 'today', label: 'Reported spend', currency: 'USD', amount: 2.5, period: 'today' };
+  const base = { fetchedAt: now, balances: [wallet], limits: [requestLimit], spending: [spend] };
+  assert.deepEqual(validateSnapshot(base), base); // missing cap stays null, count units stay counts
+
+  // Legacy top-level fields are rejected, never converted — even beside a valid snapshot.
+  for (const legacy of [{ windows: [] }, { balance: wallet }, { allowance: requestLimit }, { spend }]) {
+    assert.throws(() => validateSnapshot({ ...base, ...legacy }), QuotaError);
+  }
+  // Spend-only is valid; every array is required and all-empty is not a snapshot.
+  assert.deepEqual(validateSnapshot({ fetchedAt: now, balances: [], limits: [], spending: [spend] }),
+    { fetchedAt: now, balances: [], limits: [], spending: [spend] });
+  for (const missing of ['balances', 'limits', 'spending'] as const) {
+    const partial: Record<string, unknown> = { ...base };
+    delete partial[missing];
+    assert.throws(() => validateSnapshot(partial), QuotaError);
+  }
+  // IDs are unique within a category, not across categories.
+  assert.doesNotThrow(() => validateSnapshot({ ...base, limits: [{ ...requestLimit, id: 'wallet' }] }));
+  assert.throws(() => validateSnapshot({ ...base, limits: [requestLimit, { ...requestLimit }] }), QuotaError);
+  // An unlimited limit carries no percentage and no amounts; a wallet is never unlimited.
+  const unlimited = { id: 'unlimited', label: 'Unlimited', remainingPercent: null, resetAt: null, unlimited: true };
+  assert.doesNotThrow(() => validateSnapshot({ ...base, limits: [unlimited] }));
+  assert.throws(() => validateSnapshot({ ...base, limits: [{ ...unlimited, remainingPercent: 100 }] }), QuotaError);
+  assert.throws(() => validateSnapshot({ ...base, limits: [{ ...unlimited, amounts: requestLimit.amounts }] }), QuotaError);
+  assert.throws(() => validateSnapshot({ ...base, balances: [{ ...wallet, unlimited: true }] }), QuotaError);
+  // Supplied numeric fields must be usable: positive duration, known spend period.
+  assert.throws(() => validateSnapshot({ ...base, limits: [{ ...requestLimit, durationSeconds: 0 }] }), QuotaError);
+  assert.throws(() => validateSnapshot({ ...base, spending: [{ ...spend, period: 'week' }] }), QuotaError);
 });

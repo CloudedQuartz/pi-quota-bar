@@ -1,38 +1,41 @@
 // Query-layer contracts: no Pi, terminal, or rendering dependencies.
-export interface QuotaWindow {
+export interface Balance {
   id: string;
   label: string;
-  remainingPercent: number | null; // null is unknown, never silently 0 or 100
-  resetAt: number | null; // epoch milliseconds
-  durationSeconds: number;
-  scope?: string; // e.g. a model-specific Codex quota domain
-  amounts?: QuotaAllowance; // exact periodic amounts when exposed by the API
-}
-
-export interface AccountBalance {
   currency: string; // ISO-style currency code, e.g. USD
-  remaining: number; // may be negative (debt); not a periodic allowance
-  unlimited?: boolean; // provider granted no finite cap; ignore remaining
+  remaining: number; // finite; may be negative (debt); owned money, not a quota
 }
 
-export interface QuotaAllowance {
-  currency: string;
-  limit: number;
+export interface LimitAmounts {
+  unit: string; // currency code or a count unit, e.g. USD, CNY, tokens, requests
+  limit: number | null; // null when the API supplies amounts but no total cap
   used: number;
-  remaining: number;
+  remaining: number; // may be negative when overdrawn
 }
 
-export interface SpendSummary {
+export interface UsageLimit {
+  id: string;
+  label: string;
+  scope?: string; // e.g. a model-specific Codex quota domain
+  remainingPercent: number | null; // remaining, not used; null is unknown
+  resetAt: number | null; // epoch milliseconds; null is unknown/not supplied
+  durationSeconds?: number; // absence says nothing about whether it renews
+  amounts?: LimitAmounts; // independent of rounded/provider-specific percentages
+  unlimited?: true; // no finite cap; no amounts or fabricated percentage
+}
+
+export interface Spending {
+  id: string;
+  label: string;
   currency: string;
-  today?: number;
-  lifetime?: number;
+  amount: number;
+  period: 'today' | 'lifetime'; // today uses the provider's day, not an inferred timezone
 }
 
 export interface QuotaSnapshot {
-  windows: readonly QuotaWindow[];
-  balance?: AccountBalance;
-  allowance?: QuotaAllowance;
-  spend?: SpendSummary;
+  balances: Balance[];
+  limits: UsageLimit[];
+  spending: Spending[];
   fetchedAt: number;
 }
 

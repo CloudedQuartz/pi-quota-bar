@@ -93,7 +93,7 @@ test('an explicit adapter overrides a matching built-in provider', async t => {
   const adapter: QuotaAdapter = {
     provider: 'deepseek', label: 'Configured DeepSeek',
     async query({ now }) {
-      return { fetchedAt: now(), windows: [], balance: { currency: 'CNY', remaining: 88 } };
+      return { fetchedAt: now(), limits: [], balances: [{ id: 'wallet', label: 'Balance', currency: 'CNY', remaining: 88 }], spending: [] };
     },
   };
   const h = harness('tui', [adapter]);
@@ -163,7 +163,7 @@ test('/usage shows successful quota providers and --all reveals query errors', a
   const adapter: QuotaAdapter = {
     provider: 'my-gateway', label: 'Gateway',
     async query({ now }) {
-      return { fetchedAt: now(), windows: [], balance: { currency: 'USD', remaining: 12.34 } };
+      return { fetchedAt: now(), limits: [], balances: [{ id: 'wallet', label: 'Balance', currency: 'USD', remaining: 12.34 }], spending: [] };
     },
   };
   const h = harness('tui', [adapter]);
@@ -206,7 +206,7 @@ test('/usage pins the current provider first and marks it with a star', async t 
   const adapter: QuotaAdapter = {
     provider: 'my-gateway', label: 'Gateway',
     async query({ now }) {
-      return { fetchedAt: now(), windows: [
+      return { fetchedAt: now(), balances: [], spending: [], limits: [
         { id: '1w', label: '1w', remainingPercent: 50, resetAt: now() + 3_600_000, durationSeconds: 604800 },
       ] };
     },
@@ -238,7 +238,7 @@ test('alias provider shares the target account: one pinned row, no double query 
     provider: 'main', label: 'Main',
     async query({ now }) {
       queries++;
-      return { fetchedAt: now(), windows: [], balance: { currency: 'USD', remaining: 42 } };
+      return { fetchedAt: now(), limits: [], balances: [{ id: 'wallet', label: 'Balance', currency: 'USD', remaining: 42 }], spending: [] };
     },
   };
   const h = harness('tui', [target], undefined, { 'main-alias': 'main' });

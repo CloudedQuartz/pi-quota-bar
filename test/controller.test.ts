@@ -6,7 +6,7 @@ import { QuotaError } from '../src/query/types.ts';
 import type { QuotaAdapter, QuotaSnapshot, QuotaState } from '../src/query/types.ts';
 
 const snapshot = (remainingPercent = 72): QuotaSnapshot => ({ fetchedAt: 100000,
-  windows: [{ id: '5h', label: '5h', remainingPercent, resetAt: null, durationSeconds: 18000 }],
+  balances: [], limits: [{ id: '5h', label: '5h', remainingPercent, resetAt: null, durationSeconds: 18000 }], spending: [],
 });
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -43,7 +43,7 @@ test('switch clears old values synchronously; slow old success cannot overwrite 
   assert.equal(controller.state.kind, 'ready');
   if (controller.state.kind === 'ready') {
     assert.equal(controller.state.provider, 'b');
-    assert.equal(controller.state.snapshot.windows[0].remainingPercent, 85);
+    assert.equal(controller.state.snapshot.limits[0].remainingPercent, 85);
   }
 });
 
@@ -95,7 +95,7 @@ test('manual refresh supersedes a hanging request instead of reporting false suc
   slow.resolve(snapshot(2));
   await flush();
   assert.equal(controller.state.kind, 'ready');
-  if (controller.state.kind === 'ready') assert.equal(controller.state.snapshot.windows[0].remainingPercent, 91);
+  if (controller.state.kind === 'ready') assert.equal(controller.state.snapshot.limits[0].remainingPercent, 91);
 });
 
 test('timeout also bounds non-cooperative auth/adapters', async () => {
@@ -152,7 +152,7 @@ test('honors Retry-After; unsupported provider has no queries', async () => {
 test('reselecting same provider clears cache, permits account changes and validates custom data', async () => {
   let calls = 0;
   const { controller } = setup([{ provider: 'a', label: 'A', query: async () => {
-    return ++calls === 1 ? snapshot() : { fetchedAt: 0, windows: [] };
+    return ++calls === 1 ? snapshot() : { fetchedAt: 0, balances: [], limits: [], spending: [] };
   } }]);
   controller.select('a');
   await controller.refresh(auth);
