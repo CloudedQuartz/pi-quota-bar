@@ -3,6 +3,7 @@ import { duration, formatPercent, horizontalBar, plain, remainingTone, renderBar
 import type { BarElement, Paint, Span } from './bar.ts';
 import { allowanceLines, allowanceSpans, balanceLines, balanceSpans, money, spendLines } from './balance.ts';
 import type { QuotaErrorCode, QuotaState, QuotaWindow } from '../query/types.ts';
+import type { FooterWindows } from '../query/settings.ts';
 
 const errorText: Record<QuotaErrorCode, string> = {
   auth: 'Sign in with /login',
@@ -25,7 +26,7 @@ function windowSpans(window: QuotaWindow, now: number): Span[] {
 }
 
 // Footer window cap: a positive count, or 'all' for every shared window.
-export type FooterWindows = number | 'all';
+export type { FooterWindows };
 
 export function quotaElement(state: QuotaState, now = Date.now(), maxWindows: FooterWindows = 2): BarElement {
   const element: BarElement = { id: 'quota', spans: [] };

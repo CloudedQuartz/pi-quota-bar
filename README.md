@@ -81,6 +81,28 @@ Pi model/auth → adapter → QuotaSnapshot → controller → footer / /usage /
 
 The extension publishes structured state on `quota-bar:state:v1`. Use `createQuotaExtension({ footer: false })` to consume it without this extension's footer. Normal queries are throttled, cancellable, timeout-bounded and backed off after errors. `/usage` forces a fresh query for every configured supported provider, then omits failed results from its default view. Switching provider discards old footer values immediately.
 
+## Standalone query layer
+
+Non-Pi consumers (bridges, plugins, scripts) can import the query layer without pulling in the Pi extension or its peer dependencies:
+
+```ts
+import {
+  AdapterRegistry, codexAdapter, createJsonClient, createPostJsonClient,
+} from '@astrosheep/pi-quota/query';
+
+const registry = new AdapterRegistry([codexAdapter]);
+const snapshot = await registry.get('openai-codex')!.query({
+  provider: 'openai-codex',
+  signal: AbortSignal.timeout(10_000),
+  now: () => Date.now(),
+  getAuth: myAuthResolver,      // you supply credentials
+  getJson: createJsonClient(),
+  postJson: createPostJsonClient(),
+});
+```
+
+The subpath exports every adapter, the registry/controller, option validators, HTTP/exec plumbing, and all query types. Peer dependencies are marked optional, so installing for the query layer alone stays light.
+
 ## Development
 
 Requires Node ≥22.18 and a compatible Pi installation.

@@ -3,14 +3,9 @@ import { renderFooter } from './bar/quota.ts';
 import type { FooterWindows } from './bar/quota.ts';
 import { captureAllUsage, USAGE_ENTRY, usageCardComponent, usageLines, compactUsageLines } from './bar/card.ts';
 import type { UsageCard } from './bar/card.ts';
-import { codexAdapter } from './query/codex.ts';
-import { createDeepSeekAdapter } from './query/deepseek.ts';
-import { kimiAdapter } from './query/kimi.ts';
-import { openCodeGoAdapter } from './query/opencode-go.ts';
 import { QuotaController } from './query/controller.ts';
 import { createJsonClient, createPostJsonClient } from './query/http.ts';
-import { AdapterRegistry } from './query/registry.ts';
-import { createAliasAdapter, createDanglingAliasAdapter } from './query/alias.ts';
+import { composeQuotaRegistry } from './query/settings.ts';
 import type { ProviderAuth, QuotaAdapter, QuotaState } from './query/types.ts';
 
 export const STATUS_EVENT = 'quota-bar:state:v1';
@@ -33,21 +28,8 @@ export interface QuotaExtensionOptions {
 
 export function createQuotaExtension(options: QuotaExtensionOptions = {}) {
   return (pi: ExtensionAPI): void => {
-    const explicitAdapters = options.adapters ?? [];
-    const aliases = options.aliases ?? {};
-    const explicitProviderIds = new Set([...explicitAdapters.map(adapter => adapter.provider), ...Object.keys(aliases)]);
     // Settings are deliberate user bindings, so they take precedence over defaults.
-    // AdapterRegistry still detects an ambiguous duplicate among explicit adapters.
-    const registry = new AdapterRegistry([
-      codexAdapter, kimiAdapter, openCodeGoAdapter, createDeepSeekAdapter('deepseek'),
-    ].filter(adapter => !explicitProviderIds.has(adapter.provider)).concat(explicitAdapters));
-    // Alias providers share their target's account: register a delegating adapter
-    // under the alias ID. One hop only — an alias of an alias never resolves, and
-    // a dangling alias stays visible as an error instead of vanishing silently.
-    for (const [alias, targetId] of Object.entries(aliases)) {
-      const target = aliases[targetId] === undefined ? registry.get(targetId) : undefined;
-      registry.register(target ? createAliasAdapter(alias, target) : createDanglingAliasAdapter(alias));
-    }
+    const { registry, aliases } = composeQuotaRegistry({ adapters: options.adapters, aliases: options.aliases });
     let current: ExtensionContext | undefined;
     let selectedProvider: string | undefined;
     let timer: ReturnType<typeof setInterval> | undefined;
