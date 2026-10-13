@@ -6,7 +6,9 @@ import type { AccountBalance, QuotaAdapter, QuotaAllowance, QuotaSnapshot, Quota
 
 export function sub2ApiUsageUrl(baseUrl: string | undefined): string {
   const url = safeBaseUrl(baseUrl);
-  url.pathname = `${url.pathname.replace(/\/+$/, '')}/usage`;
+  // Anthropic clients use the host root; OpenAI clients include /v1.
+  const prefix = url.pathname.replace(/\/+$/, '') || '/v1';
+  url.pathname = `${prefix}/usage`;
   return url.toString();
 }
 

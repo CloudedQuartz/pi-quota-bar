@@ -93,6 +93,8 @@ test('adapter uses the selected provider auth and derived URL, never returns cre
 });
 
 test('usage URL preserves subpath, accepts loopback, rejects unsafe origins and URL secrets', () => {
+  assert.equal(sub2ApiUsageUrl('https://host.test'), 'https://host.test/v1/usage');
+  assert.equal(sub2ApiUsageUrl('https://host.test/'), 'https://host.test/v1/usage');
   assert.equal(sub2ApiUsageUrl('https://host.test/v1'), 'https://host.test/v1/usage');
   assert.equal(sub2ApiUsageUrl('https://host.test/gateway/v1/'), 'https://host.test/gateway/v1/usage');
   assert.equal(sub2ApiUsageUrl('http://127.0.0.1:3000/v1'), 'http://127.0.0.1:3000/v1/usage');
