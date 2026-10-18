@@ -8,7 +8,7 @@ test('query barrel exposes the standalone surface', () => {
     'createJsonClient', 'createPostJsonClient', 'officialAuth', 'bearer', 'header',
     'createAliasAdapter', 'createDanglingAliasAdapter',
     'createExecAdapter', 'validateExecOptions',
-    'codexAdapter', 'kimiAdapter', 'openCodeGoAdapter', 'createOpenCodeGoAdapter',
+    'codexAdapter', 'openaiAdapter', 'kimiAdapter', 'openCodeGoAdapter', 'createOpenCodeGoAdapter',
     'createDeepSeekAdapter', 'createNewApiAdapter', 'validateNewApiOptions',
     'createSub2ApiAdapter', 'createYesCodeAdapter', 'validateYesCodeOptions',
     'QuotaError',
@@ -35,7 +35,7 @@ test('composeQuotaRegistry wires built-ins, settings adapters and one-hop aliase
       },
     },
   });
-  for (const provider of ['openai-codex', 'kimi-coding', 'opencode-go', 'deepseek', 'my-ds', 'ds-alias', 'bad-alias']) {
+  for (const provider of ['openai-codex', 'openai', 'kimi-coding', 'opencode-go', 'deepseek', 'my-ds', 'ds-alias', 'bad-alias']) {
     assert.ok(registry.get(provider), `missing provider: ${provider}`);
   }
   assert.deepEqual(aliases, { 'ds-alias': 'my-ds', 'bad-alias': 'nowhere' });
@@ -46,7 +46,7 @@ test('composeQuotaRegistry wires built-ins, settings adapters and one-hop aliase
 test('composeQuotaRegistry without settings yields the built-in set', () => {
   const { registry, aliases, footerWindows } = query.composeQuotaRegistry();
   assert.deepEqual(registry.list().map(adapter => adapter.provider),
-    ['openai-codex', 'kimi-coding', 'opencode-go', 'deepseek']);
+    ['openai-codex', 'openai', 'kimi-coding', 'opencode-go', 'deepseek']);
   assert.deepEqual(aliases, {});
   assert.equal(footerWindows, undefined);
 });

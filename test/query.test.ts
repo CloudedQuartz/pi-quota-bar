@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { codexAccountId, codexAdapter, parseCodex } from '../src/query/codex.ts';
+import { codexAccountId, codexAdapter, openaiAdapter, parseCodex } from '../src/query/codex.ts';
 import { kimiAdapter, parseKimi } from '../src/query/kimi.ts';
 import { createOpenCodeGoAdapter, openCodeGoAdapter, parseOpenCodeGo } from '../src/query/opencode-go.ts';
 import { createJsonClient } from '../src/query/http.ts';
@@ -157,6 +157,30 @@ test('Codex account is derived from the same runtime token, not another auth fil
     },
   }));
   assert.equal(requested, true);
+});
+
+test('the openai provider queries ChatGPT usage under its own credential', async () => {
+  let requested = false;
+  const result = await openaiAdapter.query(context({ provider: 'openai',
+    getAuth: async provider => {
+      assert.equal(provider, 'openai');
+      return { apiKey: jwt('account-B') };
+    },
+    getJson: async (url, headers) => {
+      requested = true;
+      assert.equal(url, 'https://chatgpt.com/backend-api/wham/usage');
+      assert.equal(headers['ChatGPT-Account-Id'], 'account-B');
+      return codexPayload;
+    },
+  }));
+  assert.equal(requested, true);
+  assert.deepEqual(result.limits.map(l => [l.label, l.remainingPercent]), [['5h', 72], ['1w', 85]]);
+});
+
+test('an openai API key has no ChatGPT account and fails before HTTP', async () => {
+  const getJson = async () => { assert.fail('Must not send credentials'); };
+  await assert.rejects(openaiAdapter.query(context({ provider: 'openai',
+    getAuth: async () => ({ apiKey: 'sk-api-key' }), getJson })), QuotaError);
 });
 
 test('runtime Authorization and account headers take precedence', async () => {

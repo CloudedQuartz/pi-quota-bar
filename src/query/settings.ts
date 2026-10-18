@@ -1,5 +1,5 @@
 import { createAliasAdapter, createDanglingAliasAdapter } from './alias.ts';
-import { codexAdapter } from './codex.ts';
+import { codexAdapter, openaiAdapter } from './codex.ts';
 import { createDeepSeekAdapter } from './deepseek.ts';
 import { createExecAdapter, validateExecOptions } from './exec.ts';
 import { kimiAdapter } from './kimi.ts';
@@ -61,7 +61,7 @@ export function parseQuotaConfig(value: unknown): QuotaConfig {
   const providers: Record<string, ProviderQuotaConfig> = Object.create(null);
   for (const [provider, item] of Object.entries(value.providers)) {
     if (!/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(provider)
-      || ['openai-codex', 'kimi-coding', 'opencode-go'].includes(provider)
+      || ['openai-codex', 'openai', 'kimi-coding', 'opencode-go'].includes(provider)
       || !record(item)) throw new QuotaConfigError();
     if (item.adapter === 'deepseek') {
       if (Object.keys(item).some(key => key !== 'adapter')) throw new QuotaConfigError();
@@ -165,7 +165,7 @@ export function composeQuotaRegistry(input: {
   const aliases = { ...loadQuotaAliasesFromSettings(input.settings ?? {}), ...(input.aliases ?? {}) };
   const explicitProviderIds = new Set([...explicitAdapters.map(adapter => adapter.provider), ...Object.keys(aliases)]);
   const registry = new AdapterRegistry([
-    codexAdapter, kimiAdapter, openCodeGoAdapter, createDeepSeekAdapter('deepseek'),
+    codexAdapter, openaiAdapter, kimiAdapter, openCodeGoAdapter, createDeepSeekAdapter('deepseek'),
   ].filter(adapter => !explicitProviderIds.has(adapter.provider)).concat(explicitAdapters));
   for (const [alias, targetId] of Object.entries(aliases)) {
     const target = aliases[targetId] === undefined ? registry.get(targetId) : undefined;

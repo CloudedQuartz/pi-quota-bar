@@ -1,7 +1,7 @@
 import { bearer, header, officialAuth } from './http.ts';
 import { numeric, object, percent, safeLabel, timestamp, windowLabel } from './parse.ts';
 import { QuotaError } from './types.ts';
-import type { QuotaAdapter, UsageLimit } from './types.ts';
+import type { QueryContext, QuotaAdapter, QuotaSnapshot, UsageLimit } from './types.ts';
 
 // Decode only to obtain routing metadata from the same resolved token.
 // This does not verify a JWT; the official server verifies authentication.
@@ -48,18 +48,31 @@ export function parseCodex(payload: unknown, now: number): UsageLimit[] {
   return windows;
 }
 
-export const codexAdapter: QuotaAdapter = {
-  provider: 'openai-codex', label: 'Codex',
-  async query(context) {
-    const auth = await officialAuth(context, 'https://chatgpt.com');
-    const token = bearer(auth);
-    const account = header(auth, 'chatgpt-account-id') ?? codexAccountId(token);
+function codexQuery(context: QueryContext): Promise<QuotaSnapshot> {
+  const auth = officialAuth(context, 'https://chatgpt.com');
+  return auth.then(resolved => {
+    const token = bearer(resolved);
+    const account = header(resolved, 'chatgpt-account-id') ?? codexAccountId(token);
     if (!account) throw new QuotaError('unsupported-auth');
-    const data = await context.getJson('https://chatgpt.com/backend-api/wham/usage', {
+    return context.getJson('https://chatgpt.com/backend-api/wham/usage', {
       Authorization: `Bearer ${token}`, 'ChatGPT-Account-Id': account,
       Origin: 'https://chatgpt.com', Referer: 'https://chatgpt.com/',
     }, context.signal);
+  }).then(data => {
     const now = context.now();
     return { balances: [], limits: parseCodex(data, now), spending: [], fetchedAt: now };
-  },
+  });
+}
+
+export const codexAdapter: QuotaAdapter = {
+  provider: 'openai-codex', label: 'Codex',
+  query: codexQuery,
+};
+
+// Pi's built-in `openai` provider may carry the same ChatGPT OAuth subscription
+// credential under a different provider ID. It shares the Codex usage endpoint;
+// an API-key credential cannot produce a ChatGPT account ID and fails cleanly.
+export const openaiAdapter: QuotaAdapter = {
+  provider: 'openai', label: 'OpenAI',
+  query: codexQuery,
 };

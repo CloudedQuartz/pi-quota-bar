@@ -54,7 +54,9 @@ Use the **exact Pi provider ID**. Built-in providers and explicitly bound provid
 | `exec` | Runs `command` as argv (no shell), parses stdout as a `QuotaSnapshot` JSON | Whatever the command reports; `fetchedAt` is stamped by the adapter, never by the command |
 | `alias` | No endpoint — delegates to the `of` binding (built-in or explicit) | Shares the target account's quota; one folded row in `/usage` |
 
-Bind `opencode-go` to a second OpenCode Go account: register it as its own Pi provider in `models.json` with its own `apiKey` (e.g. `opencode-go-2`), then bind that ID here. The built-in `opencode-go` binding is implicit and needs no entry; the reserved IDs `openai-codex`, `kimi-coding` and `opencode-go` cannot be rebound.
+Bind `opencode-go` to a second OpenCode Go account: register it as its own Pi provider in `models.json` with its own `apiKey` (e.g. `opencode-go-2`), then bind that ID here. The built-in `opencode-go` binding is implicit and needs no entry; the reserved IDs `openai-codex`, `openai`, `kimi-coding` and `opencode-go` cannot be rebound.
+
+The built-in `openai` provider shares the Codex usage endpoint: OpenAI's "Sign in with ChatGPT" OAuth exposes the subscription's Codex pool under both Pi provider IDs, so a session on `openai` shows the same 5h/weekly windows as `openai-codex`, queried with `openai`'s own credential. An `openai` login carried by an API key instead cannot access ChatGPT subscription usage and reports an `unsupported-auth` error rather than guessing.
 
 Sub2API accepts no extra settings; it preserves deployment subpaths. Rate-only keys need not expose a top-level currency (rates are USD). Unknown rate-window durations and invalid limits fail rather than inventing a 1d window. Subscription periods without a cap are omitted. Its dashboard `/api/v1/usage` is a separate, JWT-authenticated paginated request log; the adapter uses the API-key `/v1/usage` instead.
 
